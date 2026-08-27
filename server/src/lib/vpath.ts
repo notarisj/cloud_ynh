@@ -2,17 +2,24 @@ import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config';
 import { badRequest, forbidden, notFound } from './errors';
+import * as shares from '../services/shares';
 
 /**
  * Clients never see filesystem paths. They see *virtual* paths of the form
  *
  *     /me/Documents/report.pdf
- *     /shared/Team/logo.png
+ *     /shared/Holiday Photos/beach.jpg
  *
  * where the first segment names a root. "me" is the caller's private
- * directory, "shared" is the common area. Keeping the caller's username out of
- * the path means a device that logs in as somebody else automatically sees the
- * right files without rewriting anything it has cached.
+ * directory. Keeping the caller's username out of the path means a device that
+ * logs in as somebody else automatically sees the right files without
+ * rewriting anything it has cached.
+ *
+ * "shared" is not a directory at all. It is an index: its children are the
+ * items people have published, each one resolving back into its owner's
+ * private root. A file therefore has exactly one home — the owner's — and
+ * sharing never moves, copies or hides it. "/shared/Holiday Photos" and
+ * "/me/Photos/Holiday" can be the very same directory, seen from two angles.
  */
 export type RootId = 'me' | 'shared';
 
@@ -24,19 +31,26 @@ export interface ResolvedPath {
   root: RootId;
   /** Path relative to the root, "" for the root itself. */
   rel: string;
-  /** Absolute path on disk. */
+  /** Absolute path on disk. Empty for the "/shared" index, which has none. */
   abs: string;
-  /** Absolute path of the root this resolved into. */
+  /** Absolute path of the subtree this resolved into. */
   rootAbs: string;
+  /** Account whose bytes these are — the caller, or the owner of a share. */
+  owner: string;
+  /** Whether the caller may modify what this path points at. */
+  writable: boolean;
+  /** The share this path was reached through, when it came in via "/shared". */
+  share: shares.ShareRecord | null;
+  /** True for "/me" and "/shared" themselves, and for a share's top item. */
+  isRoot: boolean;
+  /** True only for "/shared", which is an index rather than a directory. */
+  isShareIndex: boolean;
 }
 
-/** Absolute directory backing a root for a given user. */
-export function rootDirFor(username: string, root: RootId): string {
+/** Absolute directory backing a user's private root. */
+export function rootDirFor(username: string, root: RootId = 'me'): string {
   if (root === 'shared') {
-    if (!config.storage.sharedEnabled) {
-      throw forbidden('The shared area is disabled on this server', 'shared_disabled');
-    }
-    return config.storage.sharedDir;
+    throw badRequest('The shared index has no single directory', 'invalid_root');
   }
   return path.join(config.storage.usersDir, username);
 }
@@ -88,24 +102,85 @@ export function parseVPath(username: string, input: string): ResolvedPath {
   }
   const root = rootSegment as RootId;
 
+  if (root === 'shared') return parseSharedPath(username, segments);
+
   const restSegments = segments.slice(1);
   for (const segment of restSegments) assertValidName(segment);
 
-  const rootAbs = rootDirFor(username, root);
+  const rootAbs = rootDirFor(username);
   const rel = restSegments.join('/');
 
   return {
-    vpath: '/' + [root, ...restSegments].join('/'),
-    root,
+    vpath: '/' + ['me', ...restSegments].join('/'),
+    root: 'me',
     rel,
     abs: rel === '' ? rootAbs : path.join(rootAbs, rel),
     rootAbs,
+    owner: username,
+    writable: true,
+    share: null,
+    isRoot: rel === '',
+    isShareIndex: false,
+  };
+}
+
+/**
+ * "/shared" itself, or "/shared/<slug>/…" — one published item and whatever
+ * lies beneath it. The slug is looked up in the registry; everything after it
+ * is an ordinary relative path inside the owner's directory.
+ */
+function parseSharedPath(username: string, segments: string[]): ResolvedPath {
+  if (!shares.enabled()) {
+    throw forbidden('Sharing is disabled on this server', 'sharing_disabled');
+  }
+
+  const slug = segments[1];
+  if (slug === undefined) {
+    return {
+      vpath: '/shared',
+      root: 'shared',
+      rel: '',
+      abs: '',
+      rootAbs: '',
+      owner: '',
+      // Nothing is ever written to the index itself: publishing an item is a
+      // share, not an upload.
+      writable: false,
+      share: null,
+      isRoot: true,
+      isShareIndex: true,
+    };
+  }
+
+  const record = shares.bySlug(slug);
+  if (!record) throw notFound('That shared item is no longer available', 'not_shared');
+
+  const restSegments = segments.slice(2);
+  for (const segment of restSegments) assertValidName(segment);
+
+  const rootAbs = shares.absOf(record);
+  const rel = restSegments.join('/');
+
+  return {
+    vpath: '/' + ['shared', slug, ...restSegments].join('/'),
+    root: 'shared',
+    rel,
+    abs: rel === '' ? rootAbs : path.join(rootAbs, rel),
+    rootAbs,
+    owner: record.owner,
+    // Everyone with access to the app may read a shared item; only its owner
+    // may change it, and even then the canonical place to do that is their own
+    // files. Someone else's share is never a place to drop things.
+    writable: record.owner === username,
+    share: record,
+    isRoot: rel === '',
+    isShareIndex: false,
   };
 }
 
 /**
  * Parse a virtual path *and* prove that the real path it lands on is inside
- * the root, following symlinks.
+ * the subtree it claims to be in, following symlinks.
  *
  * parseVPath alone is not enough: a symlink placed inside the data directory
  * (by a restored backup, by another app, or by a user with shell access) would
@@ -121,12 +196,17 @@ export async function resolveVPath(
 ): Promise<ResolvedPath> {
   const parsed = parseVPath(username, input);
 
+  // The share index is synthetic: there is nothing on disk to canonicalise.
+  if (parsed.isShareIndex) return parsed;
+
   const realRoot = await fs.realpath(parsed.rootAbs).catch(() => null);
   if (realRoot === null) {
-    // The private root is created lazily on first login; the shared root is
-    // created at install time. Either way a missing root is not the client's
-    // fault to fix.
-    throw notFound('Storage root is not available');
+    // The private root is created lazily on first login. A missing *share*
+    // root means the owner deleted the item from underneath the registry;
+    // either way it is not the client's fault to fix.
+    throw notFound(
+      parsed.share ? 'That shared item is no longer available' : 'Storage root is not available',
+    );
   }
 
   let existing = parsed.abs;
@@ -155,6 +235,37 @@ export async function resolveVPath(
   if (opts.mustExist && trailing.length > 0) throw notFound();
 
   return { ...parsed, abs: path.join(realExisting, ...trailing) };
+}
+
+/**
+ * Refuse a write the caller is not entitled to make. Read access to a shared
+ * item never implies write access to it.
+ */
+export function assertWritable(resolved: ResolvedPath): void {
+  if (resolved.writable) return;
+
+  if (resolved.isShareIndex) {
+    throw forbidden(
+      'Shared is a view of published items, not a folder. Upload to My Files and share from there.',
+      'shared_read_only',
+    );
+  }
+  throw forbidden('This item was shared with you and is read-only', 'read_only_share');
+}
+
+/** The owner's own virtual path for something reached through a share. */
+export function ownerVPath(resolved: ResolvedPath): string {
+  if (resolved.root === 'me') return resolved.vpath;
+  if (!resolved.share) return resolved.vpath;
+  const rel = resolved.rel === '' ? resolved.share.rel : `${resolved.share.rel}/${resolved.rel}`;
+  return `/me/${rel}`;
+}
+
+/** Path of the owner's item relative to their private root, "" for the root. */
+export function ownerRelOf(resolved: ResolvedPath): string {
+  if (resolved.root === 'me') return resolved.rel;
+  if (!resolved.share) return '';
+  return resolved.rel === '' ? resolved.share.rel : `${resolved.share.rel}/${resolved.rel}`;
 }
 
 /** Virtual path of the parent, or null when the argument is a root. */

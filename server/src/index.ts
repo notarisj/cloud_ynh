@@ -15,6 +15,7 @@ import { uploadRouter } from './routes/upload';
 import * as trash from './services/trash';
 import * as uploads from './services/uploads';
 import * as thumbs from './services/thumbs';
+import * as shares from './services/shares';
 
 assertProductionConfig();
 ensureStorageLayout();
@@ -156,6 +157,9 @@ function schedule(label: string, task: () => Promise<void>, intervalMs: number):
 }
 
 schedule('trash purge', trash.purgeExpired, 24 * 3600 * 1000);
+schedule('share registry sweep', async () => {
+  await shares.prune();
+}, 24 * 3600 * 1000);
 schedule('stale upload sweep', uploads.purgeStale, 3600 * 1000);
 schedule('thumbnail cache sweep', thumbs.sweepCache, 6 * 3600 * 1000);
 

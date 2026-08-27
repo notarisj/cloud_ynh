@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { wrap } from '../lib/async';
-import { badRequest } from '../lib/errors';
-import { parentVPath } from '../lib/vpath';
+import { badRequest, forbidden } from '../lib/errors';
+import { parentVPath, parseVPath } from '../lib/vpath';
 import { ensureRoot, principal, requireAuth } from '../middleware/auth';
 import * as storage from '../services/storage';
+import * as shares from '../services/shares';
 import * as trash from '../services/trash';
 import { signTicket, TICKET_TTL_SECONDS } from '../services/tokens';
 import type { ConflictPolicy, SortKey } from '../services/storage';
@@ -40,7 +41,7 @@ filesRouter.get(
     const sortRaw = req.query.sort;
     const sort = SORT_KEYS.includes(sortRaw as SortKey) ? (sortRaw as SortKey) : 'name';
 
-    const { entry, entries } = await storage.list(user.username, vpath, {
+    const { entry, entries, writable } = await storage.list(user.username, vpath, {
       sort,
       descending: req.query.desc === '1' || req.query.desc === 'true',
       showHidden: req.query.hidden === '1' || req.query.hidden === 'true',
@@ -49,6 +50,9 @@ filesRouter.get(
     res.json({
       entry,
       entries,
+      // Clients use this to decide whether to offer New Folder, Upload and
+      // drag-and-drop at all, rather than letting the user try and be refused.
+      writable,
       parent: parentVPath(entry.path),
       // Bundled so that opening a folder is one round trip, not one plus one
       // per thumbnail the client is about to request.
@@ -98,6 +102,95 @@ filesRouter.post(
     if (scope !== '/') await storage.stat(user.username, scope);
 
     res.json({ token: signTicket(user.username, scope), expiresIn: TICKET_TTL_SECONDS });
+  }),
+);
+
+//=================================================
+// Sharing
+//=================================================
+// Sharing never moves a file. It records that an item of yours should also be
+// reachable through "/shared", where everyone with access to this app can read
+// it. Your copy stays exactly where it was, and it is still the only copy.
+
+filesRouter.get(
+  '/shares',
+  wrap(async (req, res) => {
+    const user = principal(req);
+    res.json({
+      shares: shares
+        .all()
+        .filter((record) => record.owner === user.username)
+        .map((record) => ({
+          id: record.id,
+          path: `/me/${record.rel}`,
+          sharedAs: `/shared/${record.slug}`,
+          name: record.slug,
+          sharedAt: record.sharedAt,
+        })),
+      enabled: shares.enabled(),
+    });
+  }),
+);
+
+filesRouter.post(
+  '/share',
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const vpath = stringParam(req.body?.path, 'path');
+
+    const parsed = parseVPath(user.username, vpath);
+    if (parsed.root !== 'me') {
+      throw badRequest('Only your own files can be shared', 'not_owner');
+    }
+    if (parsed.rel === '') throw badRequest('Cannot share the whole of My Files', 'invalid_path');
+
+    // Prove it exists and is readable before writing a record for it.
+    const entry = await storage.stat(user.username, parsed.vpath);
+    const record = await shares.share(user.username, parsed.rel, entry.name);
+
+    res.status(201).json({
+      share: {
+        id: record.id,
+        path: `/me/${record.rel}`,
+        sharedAs: `/shared/${record.slug}`,
+        name: record.slug,
+        sharedAt: record.sharedAt,
+      },
+      entry: await storage.stat(user.username, parsed.vpath),
+    });
+  }),
+);
+
+filesRouter.delete(
+  '/share',
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const id = req.query.id ?? req.body?.id;
+    const rawPath = req.query.path ?? req.body?.path;
+
+    if (typeof id === 'string' && id.length > 0) {
+      await shares.unshare(user, { id });
+      res.status(204).end();
+      return;
+    }
+
+    const parsed = parseVPath(user.username, stringParam(rawPath, 'path'));
+    if (parsed.root === 'shared') {
+      // Unsharing by the path it is published under: only the owner may.
+      if (!parsed.share) throw badRequest('That path is not a shared item', 'not_shared');
+      if (parsed.rel !== '') {
+        throw badRequest('Only the top of a shared item can be unshared', 'not_shared');
+      }
+      if (parsed.share.owner !== user.username && !user.isAdmin) {
+        throw forbidden('Only the owner can stop sharing an item', 'not_owner');
+      }
+      await shares.unshare(user, { id: parsed.share.id });
+      res.status(204).end();
+      return;
+    }
+
+    await shares.unshare(user, { owner: user.username, rel: parsed.rel });
+    res.status(204).end();
   }),
 );
 

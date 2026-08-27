@@ -84,7 +84,7 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
       username: config.auth.devUser,
       displayName: config.auth.devUser,
       email: `${config.auth.devUser}@localhost`,
-      isAdmin: true,
+      isAdmin: config.auth.devAdmin,
       sid: 'dev-session',
     };
     next();

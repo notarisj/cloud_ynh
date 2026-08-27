@@ -26,6 +26,7 @@ jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
 
 [ -z "$enable_shared" ]     && enable_shared="true"
 [ -z "$enable_thumbnails" ] && enable_thumbnails="true"
+[ -z "$enable_passkeys" ]   && enable_passkeys="true"
 [ -z "$user_quota" ] && user_quota=0
 [ -z "$max_upload" ] && max_upload=20
 user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
@@ -33,6 +34,13 @@ max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
 
 ynh_config_add --template=".env" --destination="$install_dir/server/.env"
 chmod 600 "$install_dir/server/.env"
+
+# A passkey is bound to the domain it was created on. Moving the app to a
+# different domain therefore invalidates every enrolled passkey — which is the
+# whole point of that binding, but the admin should hear it from us.
+if [ "${old_domain:-$new_domain}" != "${new_domain:-$old_domain}" ]; then
+    ynh_print_warn "The domain changed, so passkeys registered on the old domain will no longer work. Users can enrol a new one from Settings after signing in through the portal."
+fi
 
 #=================================================
 # REBUILD THE SPA FOR THE NEW BASE PATH

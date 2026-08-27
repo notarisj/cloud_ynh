@@ -7,13 +7,17 @@ import { badRequest, conflict, fromNodeError, insufficientStorage, notFound } fr
 import { mimeFor, previewKind, thumbnailable, type PreviewKind } from '../lib/mime';
 import {
   assertValidName,
+  assertWritable,
   joinVPath,
+  ownerRelOf,
   parentVPath,
+  parseVPath,
   resolveVPath,
   rootDirFor,
   type ResolvedPath,
   type RootId,
 } from '../lib/vpath';
+import * as shares from './shares';
 
 export interface FileEntry {
   name: string;
@@ -32,6 +36,21 @@ export interface FileEntry {
    * concurrency on writes, and as the File Provider content version.
    */
   etag: string;
+
+  //-----------------------------------------------
+  // Sharing
+  //-----------------------------------------------
+  // All four are optional so that a client built against an older release —
+  // the iOS app in the field, for instance — keeps decoding these listings.
+
+  /** Set on an item of your own that is published under "/shared". */
+  shared?: boolean;
+  /** Where that published item appears, e.g. "/shared/Holiday Photos". */
+  sharedAs?: string;
+  /** Set when the item was reached through "/shared": who published it. */
+  sharedBy?: string;
+  /** Set when the caller may read this item but not change it. */
+  readOnly?: boolean;
 }
 
 export type SortKey = 'name' | 'size' | 'mtime' | 'kind';
@@ -106,8 +125,11 @@ export interface RootInfo {
 
 export function rootsFor(_username: string): RootInfo[] {
   const roots: RootInfo[] = [{ id: 'me', name: 'My Files', path: '/me', writable: true }];
-  if (config.storage.sharedEnabled) {
-    roots.push({ id: 'shared', name: 'Shared', path: '/shared', writable: true });
+  if (shares.enabled()) {
+    // Not writable, and deliberately so: "Shared" lists what people have
+    // published, so the only way something appears there is by being shared
+    // from the files it already lives in.
+    roots.push({ id: 'shared', name: 'Shared', path: '/shared', writable: false });
   }
   return roots;
 }
@@ -118,15 +140,65 @@ export function rootsFor(_username: string): RootInfo[] {
 
 export async function stat(username: string, vpath: string): Promise<FileEntry> {
   const resolved = await resolveVPath(username, vpath, { mustExist: true });
+  if (resolved.isShareIndex) return shareIndexEntry();
+
   const stats = await fs.stat(resolved.abs).catch((e) => {
     throw fromNodeError(e);
   });
-  const name = resolved.rel === '' ? rootLabel(resolved.root) : path.basename(resolved.rel);
-  return toEntry(resolved.vpath, name, stats);
+  const name = displayNameOf(resolved);
+  return decorate(username, resolved, toEntry(resolved.vpath, name, stats));
 }
 
-function rootLabel(root: RootId): string {
-  return root === 'shared' ? 'Shared' : 'My Files';
+/** What to call a path in a breadcrumb: the root's label, or the file's name. */
+function displayNameOf(resolved: ResolvedPath): string {
+  if (resolved.root === 'me') return resolved.rel === '' ? 'My Files' : path.basename(resolved.rel);
+  if (resolved.rel === '') return resolved.share?.slug ?? 'Shared';
+  return path.basename(resolved.rel);
+}
+
+/**
+ * "/shared" is an index, not a directory, so its own entry is synthesised.
+ * Giving it a real mtime and etag keeps the clients' caching logic working
+ * without teaching them that this one path is special.
+ */
+function shareIndexEntry(): FileEntry {
+  const records = shares.all();
+  const newest = records.reduce((latest, record) => Math.max(latest, record.sharedAt), 0);
+  return {
+    name: 'Shared',
+    path: '/shared',
+    isDir: true,
+    size: 0,
+    mtime: newest,
+    ctime: newest,
+    mime: 'inode/directory',
+    preview: null,
+    hasThumbnail: false,
+    etag: crypto
+      .createHash('sha1')
+      .update(records.map((record) => `${record.id}:${record.rel}`).join('|'))
+      .digest('base64url')
+      .slice(0, 22),
+    readOnly: true,
+  };
+}
+
+/** Tag an entry with what the caller may do with it and where it is published. */
+function decorate(username: string, resolved: ResolvedPath, entry: FileEntry): FileEntry {
+  if (resolved.root === 'shared') {
+    entry.sharedBy = resolved.owner;
+    entry.shared = true;
+    if (resolved.share) entry.sharedAs = `/shared/${resolved.share.slug}`;
+    if (!resolved.writable) entry.readOnly = true;
+    return entry;
+  }
+
+  const record = shares.recordFor(username, ownerRelOf(resolved));
+  if (record) {
+    entry.shared = true;
+    entry.sharedAs = `/shared/${record.slug}`;
+  }
+  return entry;
 }
 
 const KIND_ORDER: Record<string, number> = { image: 0, video: 1, audio: 2, pdf: 3, text: 4 };
@@ -152,12 +224,21 @@ function compare(a: FileEntry, b: FileEntry, key: SortKey): number {
   }
 }
 
+export interface ListResult {
+  entry: FileEntry;
+  entries: FileEntry[];
+  /** Whether the caller may add to, or change things in, this folder. */
+  writable: boolean;
+}
+
 export async function list(
   username: string,
   vpath: string,
   options: ListOptions = {},
-): Promise<{ entry: FileEntry; entries: FileEntry[] }> {
+): Promise<ListResult> {
   const resolved = await resolveVPath(username, vpath, { mustExist: true });
+
+  if (resolved.isShareIndex) return listShareIndex(username, options);
 
   const dirStats = await fs.stat(resolved.abs).catch((e) => {
     throw fromNodeError(e);
@@ -168,6 +249,10 @@ export async function list(
     throw fromNodeError(e);
   });
 
+  // One lookup for the whole folder rather than one per entry.
+  const published = resolved.root === 'me' ? shares.sharedRelsOf(username) : new Map();
+  const parentRel = ownerRelOf(resolved);
+
   const entries: FileEntry[] = [];
   for (const name of names) {
     if (!options.showHidden && name.startsWith('.')) continue;
@@ -176,7 +261,21 @@ export async function list(
     const stats = await fs.stat(path.join(resolved.abs, name)).catch(() => null);
     if (!stats) continue;
     if (!stats.isDirectory() && !stats.isFile()) continue;
-    entries.push(toEntry(joinVPath(resolved.vpath, name), name, stats));
+
+    const entry = toEntry(joinVPath(resolved.vpath, name), name, stats);
+
+    if (resolved.root === 'shared') {
+      entry.sharedBy = resolved.owner;
+      if (!resolved.writable) entry.readOnly = true;
+    } else {
+      const record = published.get(parentRel === '' ? name : `${parentRel}/${name}`);
+      if (record) {
+        entry.shared = true;
+        entry.sharedAs = `/shared/${record.slug}`;
+      }
+    }
+
+    entries.push(entry);
   }
 
   const key = options.sort ?? 'name';
@@ -184,9 +283,40 @@ export async function list(
   if (options.descending) entries.reverse();
 
   return {
-    entry: toEntry(resolved.vpath, resolved.rel === '' ? rootLabel(resolved.root) : path.basename(resolved.rel), dirStats),
+    entry: decorate(username, resolved, toEntry(resolved.vpath, displayNameOf(resolved), dirStats)),
     entries,
+    writable: resolved.writable,
   };
+}
+
+/**
+ * The contents of "/shared": one entry per published item, wherever it lives.
+ *
+ * Records whose file has vanished are skipped rather than reported. The daily
+ * sweep is what removes them for good; a listing is not the place to start
+ * rewriting the registry.
+ */
+async function listShareIndex(username: string, options: ListOptions): Promise<ListResult> {
+  const entries: FileEntry[] = [];
+
+  for (const record of shares.all()) {
+    const stats = await fs.stat(shares.absOf(record)).catch(() => null);
+    if (!stats) continue;
+    if (!stats.isDirectory() && !stats.isFile()) continue;
+
+    const entry = toEntry(`/shared/${record.slug}`, record.slug, stats);
+    entry.shared = true;
+    entry.sharedBy = record.owner;
+    entry.sharedAs = `/shared/${record.slug}`;
+    if (record.owner !== username) entry.readOnly = true;
+    entries.push(entry);
+  }
+
+  const key = options.sort ?? 'name';
+  entries.sort((a, b) => compare(a, b, key));
+  if (options.descending) entries.reverse();
+
+  return { entry: shareIndexEntry(), entries, writable: false };
 }
 
 /** Resolve to an existing regular file — used by download, preview and thumbnails. */
@@ -209,7 +339,8 @@ export async function resolveFile(
 
 export async function createFolder(username: string, vpath: string): Promise<FileEntry> {
   const resolved = await resolveVPath(username, vpath);
-  if (resolved.rel === '') throw badRequest('Cannot create a root', 'invalid_path');
+  if (resolved.isRoot) throw badRequest('Cannot create a root', 'invalid_path');
+  assertWritable(resolved);
 
   try {
     await fs.mkdir(resolved.abs, { recursive: false, mode: 0o700 });
@@ -269,8 +400,12 @@ export async function move(
   const from = await resolveVPath(username, fromVPath, { mustExist: true });
   const to = await resolveVPath(username, toVPath);
 
-  if (from.rel === '') throw badRequest('Cannot move a root', 'invalid_path');
-  if (to.rel === '') throw badRequest('Cannot replace a root', 'invalid_path');
+  assertNotShareRoot(from, 'move or rename');
+  assertNotShareRoot(to, 'replace');
+  if (from.isRoot) throw badRequest('Cannot move a root', 'invalid_path');
+  if (to.isRoot) throw badRequest('Cannot replace a root', 'invalid_path');
+  assertWritable(from);
+  assertWritable(to);
 
   // Moving a folder into itself would silently detach the whole subtree.
   if (to.abs === from.abs || to.abs.startsWith(from.abs + path.sep)) {
@@ -292,8 +427,37 @@ export async function move(
     }
   }
 
+  // A share follows the item it publishes: someone who reorganises their own
+  // files should not silently un-share half of them. Anything the move
+  // overwrote is gone, so its share goes with it.
+  const finalRel = siblingRel(ownerRelOf(to), path.basename(destination));
+  if (finalRel !== ownerRelOf(from)) {
+    await shares.forgetUnder(to.owner, finalRel);
+    await shares.relocate(from.owner, ownerRelOf(from), finalRel);
+  }
+
   invalidateUsage(username);
   return stat(username, toVirtual(to, destination));
+}
+
+/**
+ * A share's top-level item is not a folder inside "/shared" that can be
+ * renamed or deleted there — it is somebody's own file, seen through the
+ * index. Changing it happens where it lives.
+ */
+function assertNotShareRoot(resolved: ResolvedPath, verb: string): void {
+  if (resolved.root === 'shared' && resolved.rel === '' && resolved.share) {
+    throw badRequest(
+      `Cannot ${verb} a shared item from here — open it in My Files, or stop sharing it.`,
+      'share_root',
+    );
+  }
+}
+
+/** Replace the last segment of a relative path, keeping its parent. */
+function siblingRel(rel: string, name: string): string {
+  const parent = rel.split('/').slice(0, -1).join('/');
+  return parent === '' ? name : `${parent}/${name}`;
 }
 
 export async function copy(
@@ -305,13 +469,17 @@ export async function copy(
   const from = await resolveVPath(username, fromVPath, { mustExist: true });
   const to = await resolveVPath(username, toVPath);
 
-  if (to.rel === '') throw badRequest('Cannot replace a root', 'invalid_path');
+  assertNotShareRoot(to, 'replace');
+  if (to.isRoot) throw badRequest('Cannot replace a root', 'invalid_path');
+  assertWritable(to);
   if (to.abs === from.abs || to.abs.startsWith(from.abs + path.sep)) {
     throw badRequest('Cannot copy a folder into itself', 'invalid_copy');
   }
 
   const size = await treeSize(from.abs);
-  await assertQuota(username, from.root, size);
+  // The copy is charged to whoever will own it, which is what makes copying
+  // something out of Shared count against the person taking the copy.
+  await assertQuota(to.owner, size);
 
   const destination = await prepareDestination(to.abs, policy);
 
@@ -332,6 +500,7 @@ export async function rename(
   policy: ConflictPolicy = 'fail',
 ): Promise<FileEntry> {
   assertValidName(newName);
+  assertNotShareRoot(parseVPath(username, vpath), 'move or rename');
   const parent = parentVPath(vpath);
   if (parent === null) throw badRequest('Cannot rename a root', 'invalid_path');
   return move(username, vpath, joinVPath(parent, newName), policy);
@@ -346,11 +515,17 @@ function toVirtual(resolved: ResolvedPath, actualAbs: string): string {
 
 export async function hardDelete(username: string, vpath: string): Promise<void> {
   const resolved = await resolveVPath(username, vpath, { mustExist: true });
-  if (resolved.rel === '') throw badRequest('Cannot delete a root', 'invalid_path');
+  assertNotShareRoot(resolved, 'delete');
+  if (resolved.isRoot) throw badRequest('Cannot delete a root', 'invalid_path');
+  assertWritable(resolved);
+
   await fs.rm(resolved.abs, { recursive: true, force: true }).catch((e) => {
     throw fromNodeError(e);
   });
-  invalidateUsage(username);
+
+  // Nothing left to publish.
+  await shares.forgetUnder(resolved.owner, ownerRelOf(resolved));
+  invalidateUsage(resolved.owner);
 }
 
 //=================================================
@@ -379,16 +554,15 @@ export async function search(
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
   const results: FileEntry[] = [];
 
-  const scopes = options.scope
-    ? [await resolveVPath(username, options.scope, { mustExist: true })]
-    : await Promise.all(
-        rootsFor(username).map((r) => resolveVPath(username, r.path, { mustExist: true })),
-      );
+  const scopes = await searchScopes(username, options.scope);
 
   // Bound the walk so a pathological tree cannot pin a CPU core.
   const DEADLINE = Date.now() + 8000;
   const MAX_VISITED = 200_000;
   let visited = 0;
+
+  // Set while walking a shared subtree, so a hit can say who published it.
+  let owner: string | null = null;
 
   async function walk(absDir: string, vDir: string, depth: number): Promise<void> {
     if (results.length >= limit || depth > 24 || Date.now() > DEADLINE || visited > MAX_VISITED) return;
@@ -404,7 +578,14 @@ export async function search(
 
       if (dirent.name.toLowerCase().includes(needle)) {
         const stats = await fs.stat(childAbs).catch(() => null);
-        if (stats) results.push(toEntry(childV, dirent.name, stats));
+        if (stats) {
+          const entry = toEntry(childV, dirent.name, stats);
+          if (owner !== null) {
+            entry.sharedBy = owner;
+            if (owner !== username) entry.readOnly = true;
+          }
+          results.push(entry);
+        }
       }
 
       // Only descend into real directories: following a symlink here is how a
@@ -414,10 +595,48 @@ export async function search(
   }
 
   for (const scope of scopes) {
+    owner = scope.owner;
     await walk(scope.abs, scope.vpath, 0);
   }
 
   return results;
+}
+
+interface SearchScope {
+  abs: string;
+  vpath: string;
+  /** Owner when the scope is a shared item; null for the caller's own files. */
+  owner: string | null;
+}
+
+/**
+ * Where a search looks.
+ *
+ * Unscoped, that is the caller's own files plus everything other people have
+ * shared. Their *own* shared items are deliberately not walked twice: the item
+ * is already covered by "/me", and a result list that shows the same photo
+ * under two paths is a puzzle, not a feature.
+ */
+async function searchScopes(username: string, scopePath?: string): Promise<SearchScope[]> {
+  if (scopePath) {
+    const resolved = await resolveVPath(username, scopePath, { mustExist: true });
+    if (!resolved.isShareIndex) {
+      return [{ abs: resolved.abs, vpath: resolved.vpath, owner: resolved.root === 'shared' ? resolved.owner : null }];
+    }
+    return shares
+      .all()
+      .map((record) => ({ abs: shares.absOf(record), vpath: `/shared/${record.slug}`, owner: record.owner }));
+  }
+
+  const own = await resolveVPath(username, '/me', { mustExist: true });
+  const scopes: SearchScope[] = [{ abs: own.abs, vpath: own.vpath, owner: null }];
+
+  for (const record of shares.all()) {
+    if (record.owner === username) continue;
+    scopes.push({ abs: shares.absOf(record), vpath: `/shared/${record.slug}`, owner: record.owner });
+  }
+
+  return scopes;
 }
 
 //=================================================
@@ -497,10 +716,14 @@ export async function usage(username: string): Promise<Usage> {
 }
 
 /**
- * Refuse a write that would not fit. Only the private root is metered — the
- * shared area is the admin's problem, not one user's allowance.
+ * Refuse a write that would not fit.
+ *
+ * Every file has exactly one owner and lives in that owner's private root, so
+ * there is no unmetered corner of the storage any more: sharing something does
+ * not hand its bytes to the server, and copying something out of Shared bills
+ * the person taking the copy.
  */
-export async function assertQuota(username: string, root: RootId, incomingBytes: number): Promise<void> {
+export async function assertQuota(username: string, incomingBytes: number): Promise<void> {
   if (incomingBytes <= 0) return;
 
   if (incomingBytes > config.storage.maxUploadBytes) {
@@ -509,7 +732,7 @@ export async function assertQuota(username: string, root: RootId, incomingBytes:
     );
   }
 
-  if (root !== 'me' || config.storage.userQuotaBytes <= 0) return;
+  if (config.storage.userQuotaBytes <= 0) return;
 
   const { usedBytes, quotaBytes } = await usage(username);
   if (usedBytes + incomingBytes > quotaBytes) {

@@ -1,0 +1,51 @@
+#!/bin/bash
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# APPLY THE PANEL
+#=================================================
+# The settings the panel writes are not what the API reads: it reads the
+# rendered .env, and it reads it once at startup. So applying a change means
+# re-rendering that file from the saved settings and restarting the service —
+# anything less would show the admin a value the running process is ignoring.
+
+ynh_app_config_apply() {
+    _ynh_app_config_apply
+
+    # Sizes are asked in GB and stored in GB; the API works in bytes.
+    user_quota=$(ynh_app_setting_get --key=user_quota)
+    max_upload=$(ynh_app_setting_get --key=max_upload)
+    [ -z "$user_quota" ] && user_quota=0
+    [ -z "$max_upload" ] && max_upload=20
+    user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
+    max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
+
+    # Booleans arrive from the panel as true/false already, but an install from
+    # before a switch existed has nothing stored at all.
+    enable_shared=$(ynh_app_setting_get --key=enable_shared)
+    enable_thumbnails=$(ynh_app_setting_get --key=enable_thumbnails)
+    enable_passkeys=$(ynh_app_setting_get --key=enable_passkeys)
+    [ -z "$enable_shared" ]     && enable_shared="true"
+    [ -z "$enable_thumbnails" ] && enable_thumbnails="true"
+    [ -z "$enable_passkeys" ]   && enable_passkeys="true"
+    [ "$enable_shared"     = "1" ] && enable_shared="true"
+    [ "$enable_thumbnails" = "1" ] && enable_thumbnails="true"
+    [ "$enable_passkeys"   = "1" ] && enable_passkeys="true"
+    [ "$enable_shared"     = "0" ] && enable_shared="false"
+    [ "$enable_thumbnails" = "0" ] && enable_thumbnails="false"
+    [ "$enable_passkeys"   = "0" ] && enable_passkeys="false"
+
+    proxy_secret=$(ynh_app_setting_get --key=proxy_secret)
+    jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
+
+    ynh_script_progression "Updating configuration..."
+    ynh_config_add --template=".env" --destination="$install_dir/server/.env"
+    chmod 600 "$install_dir/server/.env"
+    chown "$app:$app" "$install_dir/server/.env"
+
+    ynh_script_progression "Restarting $app..."
+    ynh_systemctl --service="$app" --action="restart" --wait_until="listening on" --log_path="systemd"
+}
+
+ynh_app_config_run "$1"

@@ -3,9 +3,10 @@ import path from 'path';
 import crypto from 'crypto';
 import { config } from '../config';
 import { badRequest, fromNodeError, notFound } from '../lib/errors';
-import { joinVPath, parentVPath, resolveVPath } from '../lib/vpath';
+import { assertWritable, joinVPath, ownerRelOf, parentVPath, resolveVPath } from '../lib/vpath';
 import { invalidateUsage, uniqueName, type FileEntry } from './storage';
 import * as storage from './storage';
+import * as shares from './shares';
 
 export interface TrashItem {
   id: string;
@@ -65,7 +66,16 @@ async function writeIndex(username: string, items: TrashItem[]): Promise<void> {
 
 export async function moveToTrash(username: string, vpath: string): Promise<TrashItem> {
   const resolved = await resolveVPath(username, vpath, { mustExist: true });
-  if (resolved.rel === '') throw badRequest('Cannot delete a root', 'invalid_path');
+  if (resolved.isRoot) {
+    throw badRequest(
+      resolved.root === 'shared'
+        ? 'Open this in My Files to delete it, or stop sharing it.'
+        : 'Cannot delete a root',
+      'invalid_path',
+    );
+  }
+  // Deleting is a write. Someone else's shared folder is not yours to empty.
+  assertWritable(resolved);
 
   const stats = await fs.stat(resolved.abs).catch((e) => {
     throw fromNodeError(e);
@@ -91,10 +101,12 @@ export async function moveToTrash(username: string, vpath: string): Promise<Tras
     }
   }
 
+  // Trashed items are always restored into the owner's own files, never into
+  // the share they happened to be reached through.
   const item: TrashItem = {
     id,
     name,
-    originalPath: resolved.vpath,
+    originalPath: resolved.root === 'shared' ? `/me/${ownerRelOf(resolved)}` : resolved.vpath,
     deletedAt: Date.now(),
     size: stats.isDirectory() ? 0 : stats.size,
     isDir: stats.isDirectory(),
@@ -106,7 +118,10 @@ export async function moveToTrash(username: string, vpath: string): Promise<Tras
     await writeIndex(username, items);
   });
 
-  invalidateUsage(username);
+  // Whatever was published from inside the deleted item is gone with it.
+  await shares.forgetUnder(resolved.owner, ownerRelOf(resolved));
+
+  invalidateUsage(resolved.owner);
   return item;
 }
 

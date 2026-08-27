@@ -25,7 +25,7 @@ const authOrTicket: RequestHandler = (req, _res, next) => {
     req.user = {
       username: config.auth.devUser,
       displayName: config.auth.devUser,
-      isAdmin: true,
+      isAdmin: config.auth.devAdmin,
       sid: 'dev-session',
     };
     next();

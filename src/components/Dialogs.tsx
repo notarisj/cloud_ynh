@@ -92,7 +92,15 @@ export function ConfirmDialog({
   );
 }
 
-function Scrim({ children, onDismiss }: { children: React.ReactNode; onDismiss: () => void }) {
+/**
+ * The backdrop every modal shares.
+ *
+ * Exported because "Escape closes this" and "a click outside closes this" are
+ * not decorations — a panel that ignores Escape is a panel the keyboard cannot
+ * get out of — and each modal reimplementing them is how one of them ends up
+ * without.
+ */
+export function Scrim({ children, onDismiss }: { children: React.ReactNode; onDismiss: () => void }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onDismiss();

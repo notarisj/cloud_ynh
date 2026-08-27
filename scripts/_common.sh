@@ -10,14 +10,19 @@ nodejs_version=22
 readonly RSYNC_EXCLUDES=(
     --exclude='.git'
     --exclude='.github'
+    --exclude='.gitignore'
+    --exclude='.gitattributes'
     --exclude='scripts'
     --exclude='conf'
     --exclude='doc'
+    --exclude='tests'
     --exclude='manifest.toml'
+    --exclude='config_panel.toml'
     --exclude='node_modules'
     --exclude='server/node_modules'
     --exclude='dist'
     --exclude='server/dist'
+    --exclude='server/.devdata'
     --exclude='ios'
 )
 

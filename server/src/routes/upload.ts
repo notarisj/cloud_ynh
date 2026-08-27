@@ -9,7 +9,7 @@ import os from 'os';
 import { config } from '../config';
 import { wrap } from '../lib/async';
 import { badRequest, conflict, fromNodeError, tooLarge } from '../lib/errors';
-import { joinVPath, resolveVPath } from '../lib/vpath';
+import { assertWritable, joinVPath, resolveVPath } from '../lib/vpath';
 import { ensureRoot, principal, requireAuth } from '../middleware/auth';
 import * as storage from '../services/storage';
 import * as uploads from '../services/uploads';
@@ -45,6 +45,10 @@ uploadRouter.post(
     const policy = policyOf(req.query.conflict);
 
     const dirResolved = await resolveVPath(user.username, dir, { mustExist: true });
+    // Uploads always land in files the caller owns; Shared is a view, not a
+    // drop box, and someone else's shared folder is read-only.
+    assertWritable(dirResolved);
+
     const dirStats = await fsp.stat(dirResolved.abs).catch((e) => {
       throw fromNodeError(e);
     });
@@ -52,7 +56,7 @@ uploadRouter.post(
 
     const declared = Number.parseInt(String(req.headers['content-length'] ?? '0'), 10);
     if (Number.isFinite(declared) && declared > 0) {
-      await storage.assertQuota(user.username, dirResolved.root, declared);
+      await storage.assertQuota(dirResolved.owner, declared);
     }
 
     const entry = await new Promise<storage.FileEntry>((resolve, reject) => {
@@ -82,7 +86,7 @@ uploadRouter.post(
             }
 
             const stats = await fsp.stat(temp);
-            await storage.assertQuota(user.username, dirResolved.root, stats.size);
+            await storage.assertQuota(dirResolved.owner, stats.size);
 
             let finalName = filename;
             const target = path.join(dirResolved.abs, finalName);
@@ -97,7 +101,7 @@ uploadRouter.post(
             await fsp.copyFile(temp, destination);
             await fsp.chmod(destination, 0o600).catch(() => undefined);
 
-            storage.adjustUsage(user.username, stats.size);
+            storage.adjustUsage(dirResolved.owner, stats.size);
             resolve(await storage.stat(user.username, joinVPath(dirResolved.vpath, finalName)));
           } catch (err) {
             reject(err);

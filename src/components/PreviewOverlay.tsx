@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { downloadUrl, fetchText, previewUrl } from '../lib/api';
 import type { FileEntry } from '../lib/api';
@@ -20,9 +20,19 @@ interface PreviewOverlayProps {
  * crafted PDF or SVG cannot reach back into the app's origin. Text is fetched
  * and rendered as text rather than handed to the browser to interpret, for
  * the same reason.
+ *
+ * The stage is a flex row with a definite height, which is what makes
+ * `max-height: 100%` on the media mean anything: in a grid whose rows size
+ * themselves to their content, the same declaration resolves against nothing
+ * and a tall photo is simply cut off at the bottom of the window.
  */
 export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose }: PreviewOverlayProps) {
   const entry = entries[index];
+  const [zoomed, setZoomed] = useState(false);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+
+  // A new file is always shown fitted, whatever the last one was set to.
+  useEffect(() => setZoomed(false), [index]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -34,7 +44,35 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
     return () => window.removeEventListener('keydown', onKey);
   }, [index, entries.length, onIndexChange, onClose]);
 
+  // The page behind must not scroll while the overlay is up — on a phone that
+  // is the difference between swiping a photo and scrolling the folder.
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, []);
+
   if (!entry) return null;
+
+  const isImage = entry.preview === 'image';
+
+  /** Horizontal swipes step through the folder; vertical ones are scrolling. */
+  const onTouchEnd = (event: React.TouchEvent) => {
+    const start = touchStart.current;
+    touchStart.current = null;
+    if (!start || zoomed) return;
+
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+
+    if (dx > 0 && index > 0) onIndexChange(index - 1);
+    if (dx < 0 && index < entries.length - 1) onIndexChange(index + 1);
+  };
 
   return (
     <div className="preview" role="dialog" aria-modal="true" aria-label={entry.name}>
@@ -42,7 +80,29 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
         <button type="button" className="iconbutton" onClick={onClose} aria-label="Close preview">
           <Icon name="close" size={19} />
         </button>
-        <div className="preview__title">{entry.name}</div>
+
+        <div className="preview__title">
+          {entry.name}
+          {entries.length > 1 && (
+            <span className="preview__counter">
+              {index + 1} of {entries.length}
+            </span>
+          )}
+        </div>
+
+        {isImage && (
+          <button
+            type="button"
+            className="iconbutton"
+            onClick={() => setZoomed((value) => !value)}
+            aria-pressed={zoomed}
+            aria-label={zoomed ? 'Fit to window' : 'Zoom to full size'}
+            title={zoomed ? 'Fit to window' : 'Zoom to full size'}
+          >
+            <Icon name={zoomed ? 'grid' : 'search'} size={18} />
+          </button>
+        )}
+
         <a
           className="iconbutton"
           href={downloadUrl(ticket, entry.path)}
@@ -53,7 +113,19 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
         </a>
       </header>
 
-      <div className="preview__stage">
+      <div
+        className={`preview__stage${zoomed ? ' preview__stage--zoomed' : ''}`}
+        onTouchStart={(event) => {
+          const touch = event.touches[0];
+          touchStart.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+        }}
+        onTouchEnd={onTouchEnd}
+        // Clicking the backdrop closes, the way a lightbox should; clicking the
+        // picture itself does not.
+        onClick={(event) => {
+          if (event.target === event.currentTarget) onClose();
+        }}
+      >
         {index > 0 && (
           <button
             type="button"
@@ -65,7 +137,7 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
           </button>
         )}
 
-        <PreviewBody entry={entry} ticket={ticket} />
+        <PreviewBody entry={entry} ticket={ticket} zoomed={zoomed} onToggleZoom={() => setZoomed((v) => !v)} />
 
         {index < entries.length - 1 && (
           <button
@@ -82,15 +154,29 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
   );
 }
 
-function PreviewBody({ entry, ticket }: { entry: FileEntry; ticket: string }) {
+function PreviewBody({
+  entry, ticket, zoomed, onToggleZoom,
+}: {
+  entry: FileEntry;
+  ticket: string;
+  zoomed: boolean;
+  onToggleZoom: () => void;
+}) {
   const source = previewUrl(ticket, entry.path);
 
   switch (entry.preview) {
     case 'image':
-      return <img src={source} alt={entry.name} />;
+      return (
+        <img
+          src={source}
+          alt={entry.name}
+          className={zoomed ? 'preview__media preview__media--zoomed' : 'preview__media'}
+          onClick={onToggleZoom}
+        />
+      );
     case 'video':
       // eslint-disable-next-line jsx-a11y/media-has-caption
-      return <video src={source} controls autoPlay playsInline />;
+      return <video src={source} className="preview__media" controls autoPlay playsInline />;
     case 'audio':
       return (
         <div className="preview__unsupported">

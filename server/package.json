@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@simplewebauthn/server": "^13.3.3",
     "busboy": "^1.6.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

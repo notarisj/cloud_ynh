@@ -1,0 +1,15 @@
+# Dependencies and build output — rebuilt by the install script on the server.
+node_modules/
+dist/
+server/dist/
+*.tsbuildinfo
+
+# Local development state.
+server/.env
+server/.devdata/
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

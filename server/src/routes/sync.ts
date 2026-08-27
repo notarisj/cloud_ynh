@@ -5,6 +5,7 @@ import { wrap } from '../lib/async';
 import { joinVPath, resolveVPath } from '../lib/vpath';
 import { ensureRoot, principal, requireAuth } from '../middleware/auth';
 import * as storage from '../services/storage';
+import * as shares from '../services/shares';
 
 /**
  * Change feed for the iOS File Provider extension.
@@ -37,6 +38,12 @@ syncRouter.get(
     const since = Number.isFinite(sinceRaw) ? sinceRaw : 0;
 
     const scope = await resolveVPath(user.username, rootPath, { mustExist: true });
+
+    // "/shared" is an index rather than a directory, so the walk starts at
+    // each published item instead of at a single tree.
+    const targets = scope.isShareIndex
+      ? shares.all().map((record) => ({ abs: shares.absOf(record), vpath: `/shared/${record.slug}` }))
+      : [{ abs: scope.abs, vpath: scope.vpath }];
 
     const changes: storage.FileEntry[] = [];
     const deadline = Date.now() + MAX_WALK_MS;
@@ -74,7 +81,9 @@ syncRouter.get(
       }
     }
 
-    await walk(scope.abs, scope.vpath, 0);
+    for (const target of targets) {
+      await walk(target.abs, target.vpath, 0);
+    }
 
     res.json({
       changes,

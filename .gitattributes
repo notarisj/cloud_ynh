@@ -1,0 +1,13 @@
+# The install scripts are run by bash on the server. A CRLF slipping into one
+# of them turns every line into a syntax error there, and the failure ("$'\r':
+# command not found") gives no hint of the cause — so line endings are pinned
+# rather than left to whatever the contributor's editor does.
+* text=auto eol=lf
+
+scripts/* text eol=lf
+conf/* text eol=lf
+*.sh text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

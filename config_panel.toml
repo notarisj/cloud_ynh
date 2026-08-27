@@ -1,0 +1,56 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/config_panel.v1.schema.json
+
+version = "1.0"
+
+[main]
+name.en = "Configuration"
+name.fr = "Configuration"
+
+  #=================================================
+  # Storage
+  #=================================================
+
+  [main.storage]
+  name.en = "Storage"
+
+    [main.storage.user_quota]
+    ask.en = "Per-user storage quota in GB"
+    help.en = "0 means unlimited. Counts everything an account owns, including items it has shared and items still in Recently Deleted."
+    type = "number"
+    min = 0
+    max = 100000
+
+    [main.storage.max_upload]
+    ask.en = "Maximum size of a single uploaded file, in GB"
+    help.en = "Larger files are refused before any bytes are transferred, rather than failing part-way through."
+    type = "number"
+    min = 1
+    max = 1000
+
+  #=================================================
+  # Features
+  #=================================================
+
+  [main.features]
+  name.en = "Features"
+
+    [main.features.enable_shared]
+    ask.en = "Allow sharing between users"
+    help.en = "Shared items stay in their owner's files and keep counting against that owner's quota; sharing only makes them readable by everyone who has access to this app. Turning this off hides the Shared view and stops new shares, but deletes nothing."
+    type = "boolean"
+    yes = "true"
+    no = "false"
+
+    [main.features.enable_passkeys]
+    ask.en = "Allow signing in with a passkey"
+    help.en = "A passkey signs a user in with the fingerprint, face or PIN on their own device, with no password crossing the network. The YunoHost portal keeps working either way. Passkeys are bound to this app's domain: moving the app to another domain invalidates them."
+    type = "boolean"
+    yes = "true"
+    no = "false"
+
+    [main.features.enable_thumbnails]
+    ask.en = "Generate thumbnails and previews"
+    help.en = "Needs ffmpeg and poppler for videos and PDFs, and costs CPU the first time each file is seen. Turning it off leaves file-type icons in place of thumbnails."
+    type = "boolean"
+    yes = "true"
+    no = "false"

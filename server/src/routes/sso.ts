@@ -3,6 +3,7 @@ import { config } from '../config';
 import { wrap } from '../lib/async';
 import { unauthorized } from '../lib/errors';
 import { requireProxySecret, ssoIdentity } from '../middleware/auth';
+import * as passkeys from '../services/passkeys';
 import * as storage from '../services/storage';
 import * as tokens from '../services/tokens';
 
@@ -62,6 +63,9 @@ ssoRouter.get(
       limits: {
         maxUploadBytes: config.storage.maxUploadBytes,
         chunkSize: 8 * 1024 * 1024,
+        // Lets the web app hide the passkey controls entirely when the admin
+        // has turned the feature off.
+        passkeys: passkeys.enabled(),
       },
     });
   }),

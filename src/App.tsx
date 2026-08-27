@@ -2,7 +2,7 @@ import {
   useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent,
 } from 'react';
 import * as api from './lib/api';
-import { ApiError, SessionExpiredError, portalUrl } from './lib/api';
+import { ApiError, SessionExpiredError } from './lib/api';
 import type { FileEntry, Listing, Session, SortKey, TrashItem } from './lib/api';
 import { breadcrumbs, splitExtension } from './lib/format';
 import { loadPreferences, savePreferences } from './lib/prefs';
@@ -10,9 +10,13 @@ import { filesFromDrop, uploads } from './lib/uploads';
 import { ContextMenu, type MenuAction } from './components/ContextMenu';
 import { ConfirmDialog, PromptDialog } from './components/Dialogs';
 import { FileBrowser, type ViewMode } from './components/FileBrowser';
+import { FolderPicker } from './components/FolderPicker';
 import { Icon } from './components/Icon';
 import { PreviewOverlay } from './components/PreviewOverlay';
+import { SelectionBar } from './components/SelectionBar';
+import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
+import { SignIn } from './components/SignIn';
 import { TrashView } from './components/TrashView';
 import { UploadTray } from './components/UploadTray';
 
@@ -27,9 +31,10 @@ interface Clipboard {
 type Dialog =
   | { kind: 'newFolder' }
   | { kind: 'rename'; entry: FileEntry }
-  | { kind: 'confirmDelete'; paths: string[] }
+  | { kind: 'confirmDelete'; entries: FileEntry[] }
   | { kind: 'confirmPurge'; item: TrashItem }
   | { kind: 'confirmEmptyTrash' }
+  | { kind: 'pick'; operation: 'move' | 'copy'; entries: FileEntry[] }
   | null;
 
 //=================================================
@@ -54,6 +59,7 @@ export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
+  const [signedOut, setSignedOut] = useState(false);
 
   const initial = useMemo(readHash, []);
   const [view, setView] = useState<View>(initial.view);
@@ -66,6 +72,7 @@ export function App() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
@@ -80,6 +87,7 @@ export function App() {
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const filePicker = useRef<HTMLInputElement>(null);
   const folderPicker = useRef<HTMLInputElement>(null);
@@ -89,19 +97,48 @@ export function App() {
 
   useEffect(() => savePreferences({ view: viewMode, sort, descending }), [viewMode, sort, descending]);
 
+  // Notices are transient by nature — they explain something that just
+  // happened, and they should not outlive the user's attention.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   //=================================================
   // Session
   //=================================================
 
-  useEffect(() => {
+  const openSession = useCallback((attempt = 0) => {
     api
       .getSession()
-      .then(setSession)
+      .then((value) => {
+        setSession(value);
+        setExpired(false);
+        setSignedOut(false);
+        setFatal(null);
+      })
       .catch((cause: unknown) => {
-        if (cause instanceof SessionExpiredError) setExpired(true);
-        else setFatal(cause instanceof Error ? cause.message : 'Could not reach the server.');
+        if (cause instanceof SessionExpiredError) {
+          setSignedOut(true);
+          return;
+        }
+
+        // The API can simply not be listening yet — a reverse proxy that came
+        // up first, or `npm run dev` where the web server starts in a third of
+        // the time the API takes to compile. Retrying briefly turns that from
+        // an error screen into a slightly slower first paint.
+        const unreachable = cause instanceof ApiError && cause.code === 'unreachable';
+        if (unreachable && attempt < 3) {
+          window.setTimeout(() => openSession(attempt + 1), 1200);
+          return;
+        }
+
+        setFatal(cause instanceof Error ? cause.message : 'Could not reach the server.');
       });
   }, []);
+
+  useEffect(() => openSession(), [openSession]);
 
   const rootLabels = useMemo(() => {
     const labels: Record<string, string> = {};
@@ -193,6 +230,10 @@ export function App() {
   const ticket = view === 'search' ? (searchResults?.ticket ?? null) : (listing?.ticket.token ?? null);
   const previewable = useMemo(() => entries.filter((entry) => !entry.isDir), [entries]);
 
+  // Shared is a view of what other people published, so nothing can be written
+  // into it. The server is the authority; this is what the toolbar reads.
+  const writable = view === 'browse' && (listing?.writable ?? path.startsWith('/me'));
+
   const open = useCallback(
     (entry: FileEntry) => {
       if (entry.isDir) {
@@ -230,14 +271,47 @@ export function App() {
     [refresh, refreshUsage, reportError],
   );
 
-  const doDelete = (paths: string[]) =>
+  const doDelete = (targets: FileEntry[]) =>
     runAction(async () => {
-      for (const target of paths) await api.remove(target);
+      for (const target of targets) await api.remove(target.path);
       setSelection(new Set());
     });
 
-  const doPaste = () => {
-    if (!clipboard || view !== 'browse') return;
+  const doShare = (targets: FileEntry[]) =>
+    runAction(async () => {
+      for (const target of targets) await api.share(target.path);
+      setNotice(
+        targets.length === 1
+          ? `“${targets[0]?.name}” is now in Shared. It stays in My Files.`
+          : `${targets.length} items are now in Shared. They stay in My Files.`,
+      );
+    });
+
+  const doUnshare = (targets: FileEntry[]) =>
+    runAction(async () => {
+      for (const target of targets) await api.unshare(target.path);
+      setNotice('Removed from Shared. Nothing was deleted.');
+    });
+
+  /** Move or copy a set of items into a folder the user just picked. */
+  const doTransfer = (operation: 'move' | 'copy', targets: FileEntry[], destination: string) =>
+    runAction(async () => {
+      for (const target of targets) {
+        const to = `${destination}/${target.name}`;
+        if (to === target.path) continue;
+        if (operation === 'move') await api.move(target.path, to, 'rename');
+        else await api.copy(target.path, to, 'rename');
+      }
+      setSelection(new Set());
+      setNotice(
+        `${targets.length === 1 ? '1 item' : `${targets.length} items`} ${
+          operation === 'move' ? 'moved' : 'copied'
+        } to ${destination === '/me' ? 'My Files' : destination.split('/').pop()}.`,
+      );
+    });
+
+  const doPaste = useCallback(() => {
+    if (!clipboard || view !== 'browse' || !writable) return;
     void runAction(async () => {
       for (const source of clipboard.paths) {
         const name = source.split('/').pop() ?? '';
@@ -248,15 +322,45 @@ export function App() {
       }
       if (clipboard.operation === 'cut') setClipboard(null);
     });
-  };
+  }, [clipboard, view, writable, runAction, path]);
+
+  const download = useCallback(
+    (targets: FileEntry[]) => {
+      if (!ticket) return;
+      const files = targets.filter((entry) => !entry.isDir);
+      if (files.length === 0) {
+        setNotice('Folders cannot be downloaded yet — open one and download what is inside.');
+        return;
+      }
+      // Browsers throttle a burst of navigations, so the downloads are started
+      // as separate hidden links, spaced just enough to all be honoured.
+      files.forEach((entry, index) => {
+        window.setTimeout(() => {
+          const link = document.createElement('a');
+          link.href = api.downloadUrl(ticket, entry.path);
+          link.download = entry.name;
+          link.rel = 'noopener';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        }, index * 350);
+      });
+    },
+    [ticket],
+  );
 
   const startUpload = useCallback(
     (files: File[]) => {
       if (files.length === 0) return;
-      const destination = view === 'browse' ? path : '/me';
+      // Everything lands in My Files. Uploading "into" Shared would put a file
+      // somewhere its owner cannot find it again.
+      const destination = view === 'browse' && writable ? path : '/me';
+      if (destination !== path) {
+        setNotice('Uploads go to My Files. Share them from there to publish them.');
+      }
       uploads.enqueue(files, destination);
     },
-    [view, path],
+    [view, path, writable],
   );
 
   //=================================================
@@ -278,7 +382,7 @@ export function App() {
     event.preventDefault();
     dragDepth.current = 0;
     setDragging(false);
-    if (view !== 'browse') return;
+    if (view === 'trash') return;
     startUpload(await filesFromDrop(event.dataTransfer));
   };
 
@@ -293,7 +397,7 @@ export function App() {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
-      if (dialog || previewIndex !== null) return;
+      if (dialog || previewIndex !== null || settingsOpen) return;
 
       const meta = event.metaKey || event.ctrlKey;
 
@@ -306,7 +410,7 @@ export function App() {
         setClipboard({ paths: selected.map((entry) => entry.path), operation: 'copy' });
         return;
       }
-      if (meta && event.key.toLowerCase() === 'x' && selected.length > 0) {
+      if (meta && event.key.toLowerCase() === 'x' && selected.length > 0 && writable) {
         setClipboard({ paths: selected.map((entry) => entry.path), operation: 'cut' });
         return;
       }
@@ -318,9 +422,9 @@ export function App() {
         setSelection(new Set());
         return;
       }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selected.length > 0 && view === 'browse') {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selected.length > 0 && writable) {
         event.preventDefault();
-        void doDelete(selected.map((entry) => entry.path));
+        setDialog({ kind: 'confirmDelete', entries: selected });
         return;
       }
       if (event.key === 'Enter' && selected.length === 1 && selected[0]) {
@@ -331,7 +435,7 @@ export function App() {
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
+  }, [dialog, previewIndex, settingsOpen, entries, selected, writable, doPaste, open]);
 
   //=================================================
   // Menu
@@ -342,14 +446,14 @@ export function App() {
 
     if (menu.entry === null) {
       return [
-        { id: 'newFolder', label: 'New Folder', icon: 'folderPlus' },
+        { id: 'newFolder', label: 'New Folder', icon: 'folderPlus', disabled: !writable },
         { id: 'upload', label: 'Upload Files…', icon: 'upload' },
         { id: 'uploadFolder', label: 'Upload Folder…', icon: 'folder' },
         {
           id: 'paste',
           label: 'Paste Item',
           icon: 'copy',
-          disabled: clipboard === null,
+          disabled: clipboard === null || !writable,
           separatorBefore: true,
         },
         { id: 'refresh', label: 'Refresh', icon: 'refresh', separatorBefore: true },
@@ -357,21 +461,45 @@ export function App() {
     }
 
     const many = selected.length > 1;
-    return [
-      { id: 'open', label: menu.entry.isDir ? 'Open' : 'Preview', icon: menu.entry.isDir ? 'folder' : 'photo', disabled: many },
-      { id: 'download', label: 'Download', icon: 'download', disabled: menu.entry.isDir || many },
-      { id: 'rename', label: 'Rename…', icon: 'pencil', disabled: many, separatorBefore: true },
-      { id: 'copy', label: many ? `Copy ${selected.length} Items` : 'Copy', icon: 'copy' },
-      { id: 'cut', label: many ? `Cut ${selected.length} Items` : 'Cut', icon: 'move' },
-      {
-        id: 'delete',
-        label: many ? `Delete ${selected.length} Items` : 'Delete',
-        icon: 'trash',
-        danger: true,
-        separatorBefore: true,
-      },
+    const entry = menu.entry;
+    // "Mine" means the bytes are the caller's own: not read-only, and not seen
+    // through somebody else's share.
+    const mine = !entry.readOnly && !entry.sharedBy;
+    const actions: MenuAction[] = [
+      { id: 'open', label: entry.isDir ? 'Open' : 'Preview', icon: entry.isDir ? 'folder' : 'photo', disabled: many },
+      { id: 'download', label: 'Download', icon: 'download', disabled: entry.isDir },
     ];
-  }, [menu, selected, clipboard]);
+
+    if (entry.shared && !entry.readOnly) {
+      actions.push({ id: 'unshare', label: 'Stop Sharing', icon: 'shared', separatorBefore: true });
+    } else if (mine) {
+      actions.push({ id: 'share', label: 'Share with Everyone', icon: 'shared', separatorBefore: true });
+    }
+
+    actions.push(
+      { id: 'copyTo', label: 'Copy to…', icon: 'copy', separatorBefore: true },
+    );
+
+    if (writable && mine) {
+      actions.push(
+        { id: 'moveTo', label: 'Move to…', icon: 'move' },
+        { id: 'rename', label: 'Rename…', icon: 'pencil', disabled: many },
+        { id: 'copy', label: many ? `Copy ${selected.length} Items` : 'Copy', icon: 'copy', separatorBefore: true },
+        { id: 'cut', label: many ? `Cut ${selected.length} Items` : 'Cut', icon: 'move' },
+        {
+          id: 'delete',
+          label: many ? `Delete ${selected.length} Items` : 'Delete',
+          icon: 'trash',
+          danger: true,
+          separatorBefore: true,
+        },
+      );
+    }
+
+    return actions;
+  }, [menu, selected, clipboard, writable]);
+
+  const targets = () => (selected.length > 0 ? selected : menu?.entry ? [menu.entry] : []);
 
   const onMenuSelect = (id: string) => {
     const entry = menu?.entry;
@@ -382,13 +510,15 @@ export function App() {
       case 'paste': doPaste(); break;
       case 'refresh': void refresh(); break;
       case 'open': if (entry) open(entry); break;
-      case 'download':
-        if (entry && ticket) window.location.href = api.downloadUrl(ticket, entry.path);
-        break;
+      case 'download': download(targets()); break;
+      case 'share': void doShare(targets()); break;
+      case 'unshare': void doUnshare(targets()); break;
+      case 'copyTo': setDialog({ kind: 'pick', operation: 'copy', entries: targets() }); break;
+      case 'moveTo': setDialog({ kind: 'pick', operation: 'move', entries: targets() }); break;
       case 'rename': if (entry) setDialog({ kind: 'rename', entry }); break;
-      case 'copy': setClipboard({ paths: selected.map((e) => e.path), operation: 'copy' }); break;
-      case 'cut': setClipboard({ paths: selected.map((e) => e.path), operation: 'cut' }); break;
-      case 'delete': void doDelete(selected.map((e) => e.path)); break;
+      case 'copy': setClipboard({ paths: targets().map((e) => e.path), operation: 'copy' }); break;
+      case 'cut': setClipboard({ paths: targets().map((e) => e.path), operation: 'cut' }); break;
+      case 'delete': setDialog({ kind: 'confirmDelete', entries: targets() }); break;
       default: break;
     }
   };
@@ -396,16 +526,6 @@ export function App() {
   //=================================================
   // Render
   //=================================================
-
-  if (expired) {
-    return (
-      <div className="centred">
-        <Icon name="cloud" size={44} weight={1.3} style={{ color: 'var(--text-tertiary)' }} />
-        <h2 style={{ margin: 0, fontSize: 17 }}>Your session has expired</h2>
-        <a className="button button--primary" href={portalUrl}>Sign in again</a>
-      </div>
-    );
-  }
 
   if (fatal) {
     return (
@@ -416,6 +536,10 @@ export function App() {
         <button type="button" className="button" onClick={() => window.location.reload()}>Try again</button>
       </div>
     );
+  }
+
+  if (signedOut || expired) {
+    return <SignIn expired={expired} onSignedIn={() => window.location.reload()} />;
   }
 
   if (!session) {
@@ -444,6 +568,10 @@ export function App() {
         onShowTrash={() => {
           setView('trash');
           setSelection(new Set());
+          setSidebarOpen(false);
+        }}
+        onShowSettings={() => {
+          setSettingsOpen(true);
           setSidebarOpen(false);
         }}
         onClose={() => setSidebarOpen(false)}
@@ -525,7 +653,7 @@ export function App() {
             </button>
           </div>
 
-          {view === 'browse' && (
+          {view === 'browse' && writable && (
             <div className="toolbar__group" style={{ gap: 6, marginLeft: 4 }}>
               <button
                 type="button"
@@ -557,7 +685,7 @@ export function App() {
         <div
           className="content"
           onContextMenu={(event: MouseEvent) => {
-            if (view !== 'browse') return;
+            if (view !== 'browse' || !writable) return;
             event.preventDefault();
             setSelection(new Set());
             setMenu({ x: event.clientX, y: event.clientY, entry: null });
@@ -574,6 +702,14 @@ export function App() {
             </div>
           )}
 
+          {notice && (
+            <div className="banner banner--info" role="status">
+              <Icon name="info" size={17} />
+              <span style={{ flex: 1 }}>{notice}</span>
+              <button type="button" onClick={() => setNotice(null)}>Dismiss</button>
+            </div>
+          )}
+
           {loading ? (
             <div className="centred"><div className="spinner" /></div>
           ) : view === 'trash' ? (
@@ -584,7 +720,12 @@ export function App() {
               onPurge={(item) => setDialog({ kind: 'confirmPurge', item })}
             />
           ) : entries.length === 0 ? (
-            <EmptyState view={view} query={query} onUpload={() => filePicker.current?.click()} />
+            <EmptyState
+              view={view}
+              query={query}
+              shared={currentRoot === 'shared'}
+              onUpload={() => filePicker.current?.click()}
+            />
           ) : (
             <FileBrowser
               entries={entries}
@@ -593,6 +734,7 @@ export function App() {
               sort={sort}
               descending={descending}
               selection={selection}
+              showOwner={currentRoot === 'shared' || view === 'search'}
               onSelectionChange={setSelection}
               onOpen={open}
               onContextMenu={(entry, event) => {
@@ -636,6 +778,22 @@ export function App() {
         }}
       />
 
+      {/* Unsharing stays available inside Shared, where nothing else is. */}
+      {view !== 'trash' && (
+        <SelectionBar
+          selected={selected}
+          writable={writable && selected.every((entry) => !entry.readOnly && !entry.sharedBy)}
+          onDownload={() => download(selected)}
+          onShare={() => void doShare(selected)}
+          onUnshare={() => void doUnshare(selected)}
+          onMove={() => setDialog({ kind: 'pick', operation: 'move', entries: selected })}
+          onCopy={() => setDialog({ kind: 'pick', operation: 'copy', entries: selected })}
+          onRename={() => selected[0] && setDialog({ kind: 'rename', entry: selected[0] })}
+          onDelete={() => setDialog({ kind: 'confirmDelete', entries: selected })}
+          onClear={() => setSelection(new Set())}
+        />
+      )}
+
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -675,6 +833,43 @@ export function App() {
         />
       )}
 
+      {dialog?.kind === 'confirmDelete' && (
+        <ConfirmDialog
+          title={
+            dialog.entries.length === 1
+              ? `Delete “${dialog.entries[0]?.name}”?`
+              : `Delete ${dialog.entries.length} items?`
+          }
+          message={
+            `${dialog.entries.some((entry) => entry.shared) ? 'This is shared with everyone. ' : ''}` +
+            'Deleted items go to Recently Deleted, where you can put them back for 30 days.'
+          }
+          confirmLabel="Delete"
+          destructive
+          onCancel={() => setDialog(null)}
+          onConfirm={() => {
+            const victims = dialog.entries;
+            setDialog(null);
+            void doDelete(victims);
+          }}
+        />
+      )}
+
+      {dialog?.kind === 'pick' && (
+        <FolderPicker
+          title={dialog.operation === 'move' ? 'Move to' : 'Copy to'}
+          confirmLabel={dialog.operation === 'move' ? 'Move here' : 'Copy here'}
+          // Neither a folder nor anything inside it can be its own destination.
+          excluded={dialog.entries.filter((entry) => entry.isDir).map((entry) => entry.path)}
+          onCancel={() => setDialog(null)}
+          onConfirm={(destination) => {
+            const { operation, entries: chosen } = dialog;
+            setDialog(null);
+            void doTransfer(operation, chosen, destination);
+          }}
+        />
+      )}
+
       {dialog?.kind === 'confirmPurge' && (
         <ConfirmDialog
           title={`Delete “${dialog.item.name}” permanently?`}
@@ -704,6 +899,18 @@ export function App() {
         />
       )}
 
+      {settingsOpen && (
+        <SettingsPanel
+          session={session}
+          onClose={() => setSettingsOpen(false)}
+          onChanged={() => {
+            void refresh();
+            refreshUsage();
+          }}
+          onNavigate={navigate}
+        />
+      )}
+
       {previewIndex !== null && ticket && previewable[previewIndex] && (
         <PreviewOverlay
           entries={previewable}
@@ -724,13 +931,33 @@ export function App() {
   );
 }
 
-function EmptyState({ view, query, onUpload }: { view: View; query: string; onUpload: () => void }) {
+function EmptyState({
+  view, query, shared, onUpload,
+}: {
+  view: View;
+  query: string;
+  shared: boolean;
+  onUpload: () => void;
+}) {
   if (view === 'search') {
     return (
       <div className="empty">
         <Icon name="search" size={44} weight={1.2} />
         <h2>No results</h2>
         <p>Nothing matched “{query}”.</p>
+      </div>
+    );
+  }
+
+  if (shared) {
+    return (
+      <div className="empty">
+        <Icon name="shared" size={48} weight={1.2} />
+        <h2>Nothing is shared yet</h2>
+        <p>
+          Shared lists the items people have published. To put something here, select it in My Files
+          and choose Share — it stays where it is, and everyone with access can read it.
+        </p>
       </div>
     );
   }

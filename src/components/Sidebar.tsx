@@ -11,13 +11,14 @@ interface SidebarProps {
   open: boolean;
   onNavigate: (path: string) => void;
   onShowTrash: () => void;
+  onShowSettings: () => void;
   onClose: () => void;
 }
 
 const ROOT_ICONS: Record<string, 'home' | 'shared'> = { me: 'home', shared: 'shared' };
 
 export function Sidebar({
-  roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onClose,
+  roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onShowSettings, onClose,
 }: SidebarProps) {
   // An unlimited quota has no meaningful bar, so the meter falls back to the
   // volume's free space — still useful, and honest about what it is showing.
@@ -57,6 +58,11 @@ export function Sidebar({
           className="sidebar__item"
           aria-current={view === 'browse' && currentRoot === root.id}
           onClick={() => onNavigate(root.path)}
+          title={
+            root.id === 'shared'
+              ? 'Items people have published. Everything you own stays in My Files.'
+              : undefined
+          }
         >
           <Icon name={ROOT_ICONS[root.id] ?? 'folder'} size={18} />
           <span>{root.name}</span>
@@ -96,10 +102,11 @@ export function Sidebar({
           </div>
         )}
 
-        <div className="storage__user">
+        <button type="button" className="storage__user" onClick={onShowSettings} title="Settings">
           <div className="storage__avatar" aria-hidden="true">{initials || '?'}</div>
           <span>{user.displayName || user.username}</span>
-        </div>
+          <Icon name="info" size={16} />
+        </button>
       </div>
     </nav>
   );

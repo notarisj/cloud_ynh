@@ -4,14 +4,15 @@ packaging_format = 2
 
 id = "cloud"
 name = "Cloud"
-description.en = "Personal file storage with a web interface and a native iOS client — upload, browse, preview and download your files."
-description.fr = "Stockage de fichiers personnel avec interface web et client iOS natif."
-version = "1.0.0~ynh1"
+description.en = "Personal file storage with a web interface and a native iOS client — upload, browse, preview and share your files. Sign in with the YunoHost portal or with a passkey."
+description.fr = "Stockage de fichiers personnel avec interface web et client iOS natif. Connexion par le portail YunoHost ou par clé d\'accès."
+version = "1.1.0~ynh1"
 
 maintainers = []
 
 [upstream]
 license = "MIT"
+code = "https://github.com/notarisj/cloud_ynh"
 
 [integration]
 yunohost   = ">= 12.1.17"
@@ -20,8 +21,10 @@ architectures = ["amd64", "arm64"]
 multi_instance = true
 ldap = true
 sso = true
-disk = "500M"
-ram.build = "768M"
+disk = "700M"
+# The web build (Vite + tsc) and sharp's install are the peak; 768M has been
+# seen to fail on a small VPS that is also running its usual services.
+ram.build = "1G"
 ram.runtime = "256M"
 
 [install]
@@ -52,7 +55,16 @@ ram.runtime = "256M"
   max = 1000
 
   [install.enable_shared]
-  ask.en = "Create a Shared folder visible to everyone who has access to this app?"
+  ask.en = "Allow users to share items with everyone who has access to this app?"
+  ask.fr = "Permettre aux utilisateurs de partager des éléments avec toutes les personnes ayant accès à cette application ?"
+  help.en = "Shared items stay in their owner's own files and still count against that person's quota. Sharing only makes them readable by others, and can be undone at any time."
+  type = "boolean"
+  default = true
+
+  [install.enable_passkeys]
+  ask.en = "Allow signing in with a passkey?"
+  ask.fr = "Autoriser la connexion par clé d\'accès ?"
+  help.en = "A passkey signs a user in with the fingerprint, face or PIN on their own device, without a password. The YunoHost portal keeps working either way."
   type = "boolean"
   default = true
 

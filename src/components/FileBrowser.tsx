@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Icon, iconForEntry } from './Icon';
 import { formatBytes, formatDate, formatExactDate } from '../lib/format';
 import { thumbUrl } from '../lib/api';
@@ -13,18 +13,59 @@ interface FileBrowserProps {
   sort: SortKey;
   descending: boolean;
   selection: Set<string>;
+  /** True in Shared and in search results: show where each item came from. */
+  showOwner?: boolean;
   onSelectionChange: (paths: Set<string>) => void;
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (entry: FileEntry | null, event: MouseEvent) => void;
   onSortChange: (key: SortKey) => void;
 }
 
+/**
+ * Whether the primary pointer is a finger.
+ *
+ * It decides the whole interaction model: with a mouse, a click selects and a
+ * double-click opens, the way every file manager has always worked. On a touch
+ * screen there is no double-tap worth designing for, so a tap opens and
+ * selection happens through the checkboxes — which are always visible there
+ * rather than appearing on hover, because there is no hover either.
+ */
+function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true,
+  );
+
+  useEffect(() => {
+    const query = window.matchMedia?.('(pointer: coarse)');
+    if (!query) return;
+    const update = () => setCoarse(query.matches);
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+
+  return coarse;
+}
+
 export function FileBrowser({
-  entries, ticket, view, sort, descending, selection,
+  entries, ticket, view, sort, descending, selection, showOwner,
   onSelectionChange, onOpen, onContextMenu, onSortChange,
 }: FileBrowserProps) {
   // Anchor for shift-click ranges, the way every file manager behaves.
   const anchor = useRef<string | null>(null);
+  const coarse = useCoarsePointer();
+
+  const allSelected = entries.length > 0 && entries.every((entry) => selection.has(entry.path));
+
+  const toggle = useCallback(
+    (entry: FileEntry) => {
+      const next = new Set(selection);
+      if (next.has(entry.path)) next.delete(entry.path);
+      else next.add(entry.path);
+      anchor.current = entry.path;
+      onSelectionChange(next);
+    },
+    [selection, onSelectionChange],
+  );
 
   const select = useCallback(
     (entry: FileEntry, event: MouseEvent) => {
@@ -58,7 +99,28 @@ export function FileBrowser({
     [entries, selection, onSelectionChange],
   );
 
+  /** A plain click: open on touch, select with a mouse. */
+  const activate = useCallback(
+    (entry: FileEntry, event: MouseEvent) => {
+      if (coarse && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+        // With something already selected, tapping extends the selection
+        // instead of navigating away from it.
+        if (selection.size > 0) toggle(entry);
+        else onOpen(entry);
+        return;
+      }
+      select(entry, event);
+    },
+    [coarse, selection.size, toggle, onOpen, select],
+  );
+
   const handleContext = (entry: FileEntry, event: MouseEvent) => {
+    // The folder background has its own menu — New Folder, Upload, Paste — and
+    // it is listening on an ancestor. Without this the menu for the item is
+    // built and then immediately replaced by the background's, so right-click
+    // on a file appears to do the wrong thing entirely.
+    event.stopPropagation();
+
     // Right-clicking outside the selection moves the selection to that item;
     // right-clicking inside it keeps the whole set, so a multi-item action
     // still applies to everything the user had chosen.
@@ -69,35 +131,79 @@ export function FileBrowser({
     onContextMenu(entry, event);
   };
 
+  const badges = useMemo(
+    () => (entry: FileEntry) => (
+      <>
+        {entry.shared && !showOwner && (
+          <span className="badge badge--shared" title="Shared with everyone">
+            <Icon name="shared" size={13} />
+          </span>
+        )}
+        {entry.readOnly && (
+          <span className="badge" title={`Shared by ${entry.sharedBy ?? 'someone else'} · read only`}>
+            <Icon name="info" size={13} />
+          </span>
+        )}
+      </>
+    ),
+    [showOwner],
+  );
+
   if (view === 'grid') {
     return (
-      <div className="grid" role="listbox" aria-multiselectable="true">
+      <div className={`grid${coarse || selection.size > 0 ? ' grid--picking' : ''}`} role="listbox" aria-multiselectable="true">
         {entries.map((entry) => (
-          <button
+          <div
             key={entry.path}
-            type="button"
             role="option"
+            tabIndex={0}
             className="tile"
             aria-selected={selection.has(entry.path)}
-            onClick={(event) => select(entry, event)}
-            onDoubleClick={() => onOpen(entry)}
+            onClick={(event) => activate(entry, event)}
+            onDoubleClick={() => !coarse && onOpen(entry)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onOpen(entry);
+              }
+            }}
             onContextMenu={(event) => handleContext(entry, event)}
             title={`${entry.name}\n${formatExactDate(entry.mtime)}`}
           >
+            <Checkbox
+              checked={selection.has(entry.path)}
+              label={entry.name}
+              onToggle={() => toggle(entry)}
+            />
             <div className="tile__thumb">
               <Thumbnail entry={entry} ticket={ticket} size={84} iconSize={52} />
             </div>
-            <div className="tile__name">{entry.name}</div>
-            <div className="tile__meta">{entry.isDir ? 'Folder' : formatBytes(entry.size)}</div>
-          </button>
+            <div className="tile__name">
+              {entry.name}
+              {badges(entry)}
+            </div>
+            <div className="tile__meta">
+              {entry.isDir ? 'Folder' : formatBytes(entry.size)}
+              {showOwner && entry.sharedBy && ` · ${entry.sharedBy}`}
+            </div>
+          </div>
         ))}
       </div>
     );
   }
 
   return (
-    <div className="list" role="listbox" aria-multiselectable="true">
+    <div className={`list${coarse || selection.size > 0 ? ' list--picking' : ''}`} role="listbox" aria-multiselectable="true">
       <div className="list__header" role="presentation">
+        <span className="list__check">
+          <Checkbox
+            checked={allSelected}
+            label={allSelected ? 'Deselect all' : 'Select all'}
+            onToggle={() =>
+              onSelectionChange(allSelected ? new Set() : new Set(entries.map((entry) => entry.path)))
+            }
+          />
+        </span>
         <SortHeader label="Name" column="name" sort={sort} descending={descending} onSortChange={onSortChange} />
         <SortHeader label="Size" column="size" sort={sort} descending={descending} onSortChange={onSortChange} />
         <SortHeader label="Modified" column="mtime" sort={sort} descending={descending} onSortChange={onSortChange} />
@@ -105,37 +211,90 @@ export function FileBrowser({
       </div>
 
       {entries.map((entry) => (
-        <button
+        <div
           key={entry.path}
-          type="button"
           role="option"
+          tabIndex={0}
           className="row"
           aria-selected={selection.has(entry.path)}
-          onClick={(event) => select(entry, event)}
-          onDoubleClick={() => onOpen(entry)}
+          onClick={(event) => activate(entry, event)}
+          onDoubleClick={() => !coarse && onOpen(entry)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onOpen(entry);
+            }
+          }}
           onContextMenu={(event) => handleContext(entry, event)}
         >
+          <span className="list__check">
+            <Checkbox
+              checked={selection.has(entry.path)}
+              label={entry.name}
+              onToggle={() => toggle(entry)}
+            />
+          </span>
+
           <span className="row__name">
             <span className="row__icon">
               <Thumbnail entry={entry} ticket={ticket} size={22} iconSize={19} />
             </span>
             <span title={entry.name}>{entry.name}</span>
+            {badges(entry)}
+            {/* Whose item this is belongs next to its name, not in place of
+                the date: the Modified column has a header that says what it
+                holds, and swapping its contents would make that header lie. */}
+            {showOwner && entry.sharedBy && (
+              <span className="row__owner">shared by {entry.sharedBy}</span>
+            )}
           </span>
+
           <span className="row__meta row__meta--right">{entry.isDir ? '—' : formatBytes(entry.size)}</span>
           <span className="row__meta" title={formatExactDate(entry.mtime)}>{formatDate(entry.mtime)}</span>
-          <span
+
+          <button
+            type="button"
             className="iconbutton"
-            role="presentation"
+            aria-label={`Actions for ${entry.name}`}
             onClick={(event) => {
               event.stopPropagation();
               handleContext(entry, event);
             }}
           >
             <Icon name="ellipsis" size={16} weight={2.4} />
-          </span>
-        </button>
+          </button>
+        </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * The selection checkbox. A real button rather than an <input> so that it can
+ * live inside a row without the click reaching the row underneath.
+ */
+function Checkbox({
+  checked, label, onToggle,
+}: {
+  checked: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="check"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={`Select ${label}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle();
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      {checked && <Icon name="check" size={12} weight={3} />}
+    </button>
   );
 }
 

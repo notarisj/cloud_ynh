@@ -31,10 +31,15 @@ fi
 # Installs from before these settings existed fall back to the defaults.
 [ -z "$enable_shared" ]     && enable_shared="true"
 [ -z "$enable_thumbnails" ] && enable_thumbnails="true"
+[ -z "$enable_passkeys" ]   && enable_passkeys="true"
 [ "$enable_shared"     = "1" ] && enable_shared="true"
 [ "$enable_thumbnails" = "1" ] && enable_thumbnails="true"
+[ "$enable_passkeys"   = "1" ] && enable_passkeys="true"
 [ "$enable_shared"     = "0" ] && enable_shared="false"
 [ "$enable_thumbnails" = "0" ] && enable_thumbnails="false"
+[ "$enable_passkeys"   = "0" ] && enable_passkeys="false"
+
+ynh_app_setting_set --key=enable_passkeys --value="$enable_passkeys"
 
 [ -z "$user_quota" ] && user_quota=0
 [ -z "$max_upload" ] && max_upload=20
@@ -64,9 +69,23 @@ cloud_build
 # ENSURE STORAGE LAYOUT
 #=================================================
 mkdir -p "$data_dir"/users
-mkdir -p "$data_dir"/.meta/{trash,thumbs,uploads,tokens}
-if [ "$enable_shared" = "true" ]; then
-    mkdir -p "$data_dir/shared"
+mkdir -p "$data_dir"/.meta/{trash,thumbs,uploads,tokens,passkeys}
+
+#=================================================
+# MIGRATE THE OLD COMMON FOLDER
+#=================================================
+# Up to 1.0, "Shared" was a physical folder anyone could upload into, which
+# meant a file could exist that belonged to nobody and appeared in no one's
+# files. Sharing now publishes an item from its owner's own directory, so that
+# folder is no longer served. Its contents are never deleted: they are moved
+# aside, and the admin is told exactly where they went.
+if [ -d "$data_dir/shared" ] && [ -n "$(ls -A "$data_dir/shared" 2>/dev/null)" ]; then
+    legacy_dir="$data_dir/legacy-shared-$(date +%Y%m%d%H%M%S)"
+    mv "$data_dir/shared" "$legacy_dir"
+    chown -R "$app:$app" "$legacy_dir"
+    ynh_print_warn "The old common folder is no longer served by this app. Its contents were kept in $legacy_dir — move anything worth keeping into a user's directory under $data_dir/users, and that user can share it again from the app."
+elif [ -d "$data_dir/shared" ]; then
+    rmdir "$data_dir/shared" 2>/dev/null || true
 fi
 
 # Half-finished chunked uploads cannot survive a restart of the API.

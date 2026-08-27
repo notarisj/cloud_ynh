@@ -1,10 +1,11 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { config } from '../config';
 import { wrap } from '../lib/async';
 import { badRequest, unauthorized } from '../lib/errors';
 import { principal, requireAuth } from '../middleware/auth';
 import * as ldap from '../services/ldap';
+import * as passkeys from '../services/passkeys';
 import * as storage from '../services/storage';
 import * as tokens from '../services/tokens';
 
@@ -136,6 +137,7 @@ authRouter.get(
       limits: {
         maxUploadBytes: config.storage.maxUploadBytes,
         chunkSize: 8 * 1024 * 1024,
+        passkeys: passkeys.enabled(),
       },
     });
   }),
@@ -172,5 +174,250 @@ authRouter.delete(
     const user = principal(req);
     await tokens.revokeAllSessions(user.username);
     res.status(204).end();
+  }),
+);
+
+//=================================================
+// Browser sessions
+//=================================================
+// The SSO bridge covers the normal case: the browser already has a portal
+// session and exchanges it for tokens. A passkey sign-in has no portal session
+// to exchange, so the refresh token is kept in a cookie instead — HttpOnly, so
+// no script can read it; SameSite=Strict, so no other site can cause it to be
+// sent; and scoped to the auth endpoints, so it is not attached to every
+// download the page makes.
+
+const SESSION_COOKIE = 'cloud_session';
+
+function cookieOf(req: Request, name: string): string | null {
+  const header = req.headers.cookie;
+  if (typeof header !== 'string') return null;
+
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=');
+    if (index < 0) continue;
+    if (part.slice(0, index).trim() !== name) continue;
+    return decodeURIComponent(part.slice(index + 1).trim());
+  }
+  return null;
+}
+
+function cookiePath(): string {
+  return `${config.appPath || ''}/api/v1/auth`;
+}
+
+function setSessionCookie(res: Response, username: string, refreshToken: string): void {
+  const attributes = [
+    `${SESSION_COOKIE}=${encodeURIComponent(`${username}:${refreshToken}`)}`,
+    `Path=${cookiePath()}`,
+    'HttpOnly',
+    'SameSite=Strict',
+    `Max-Age=${config.auth.refreshTtl}`,
+  ];
+  if (config.isProd) attributes.push('Secure');
+  res.append('Set-Cookie', attributes.join('; '));
+}
+
+function clearSessionCookie(res: Response): void {
+  const attributes = [
+    `${SESSION_COOKIE}=`,
+    `Path=${cookiePath()}`,
+    'HttpOnly',
+    'SameSite=Strict',
+    'Max-Age=0',
+  ];
+  if (config.isProd) attributes.push('Secure');
+  res.append('Set-Cookie', attributes.join('; '));
+}
+
+function readSessionCookie(req: Request): { username: string; refreshToken: string } | null {
+  const raw = cookieOf(req, SESSION_COOKIE);
+  if (!raw) return null;
+  const separator = raw.indexOf(':');
+  if (separator <= 0) return null;
+
+  const username = raw.slice(0, separator);
+  const refreshToken = raw.slice(separator + 1);
+  if (!ldap.isPlausibleUsername(username) || refreshToken.length === 0) return null;
+  return { username, refreshToken };
+}
+
+/** The payload the web app boots from — the same shape the SSO bridge returns. */
+async function sessionPayload(user: tokens.Principal, sid: string) {
+  await storage.ensureUserRoot(user.username);
+  return {
+    accessToken: tokens.signAccessToken(user, sid),
+    expiresIn: config.auth.accessTtl,
+    user,
+    roots: storage.rootsFor(user.username),
+    usage: await storage.usage(user.username),
+    limits: {
+      maxUploadBytes: config.storage.maxUploadBytes,
+      chunkSize: 8 * 1024 * 1024,
+      passkeys: passkeys.enabled(),
+    },
+  };
+}
+
+/**
+ * Resume a browser session from the cookie, rotating the refresh token as it
+ * goes. Called on every page load that did not come in through the portal.
+ */
+authRouter.post(
+  '/web/session',
+  wrap(async (req, res) => {
+    const cookie = readSessionCookie(req);
+    if (!cookie) throw unauthorized('No session', 'no_session');
+
+    let rotated;
+    try {
+      rotated = await tokens.rotateRefreshToken(cookie.username, cookie.refreshToken);
+    } catch (err) {
+      // A refresh token that is no longer valid should not keep being sent.
+      clearSessionCookie(res);
+      throw err;
+    }
+
+    if ((await ldap.stillPermitted(cookie.username)) === 'revoked') {
+      await tokens.revokeSession(cookie.username, rotated.sid);
+      clearSessionCookie(res);
+      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    }
+
+    const user: tokens.Principal = {
+      username: cookie.username,
+      displayName: cookie.username,
+      isAdmin: false,
+    };
+
+    setSessionCookie(res, cookie.username, rotated.newRefreshToken);
+    res.json(await sessionPayload(user, rotated.sid));
+  }),
+);
+
+authRouter.post(
+  '/web/logout',
+  wrap(async (req, res) => {
+    const cookie = readSessionCookie(req);
+    if (cookie) {
+      await tokens.revokeRefreshToken(cookie.username, cookie.refreshToken).catch(() => undefined);
+    }
+    clearSessionCookie(res);
+    res.status(204).end();
+  }),
+);
+
+//=================================================
+// Passkeys
+//=================================================
+
+/** Enrolling a passkey always happens from a session that is already trusted. */
+authRouter.post(
+  '/passkeys/register/options',
+  requireAuth,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    res.json(await passkeys.beginRegistration(user));
+  }),
+);
+
+authRouter.post(
+  '/passkeys/register',
+  requireAuth,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const { ticket, response, name } = req.body ?? {};
+    if (!response || typeof response !== 'object') {
+      throw badRequest('A registration response is required', 'missing_response');
+    }
+    res.status(201).json({ passkey: await passkeys.finishRegistration(user, ticket, response, name) });
+  }),
+);
+
+authRouter.get(
+  '/passkeys',
+  requireAuth,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    res.json({ passkeys: await passkeys.list(user.username), enabled: passkeys.enabled() });
+  }),
+);
+
+authRouter.patch(
+  '/passkeys/:id',
+  requireAuth,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const passkey = await passkeys.rename(user.username, String(req.params.id), String(req.body?.name ?? ''));
+    res.json({ passkey });
+  }),
+);
+
+authRouter.delete(
+  '/passkeys/:id',
+  requireAuth,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    await passkeys.remove(user.username, String(req.params.id));
+    res.status(204).end();
+  }),
+);
+
+//=================================================
+// Signing in with a passkey
+//=================================================
+// Both halves are rate limited: this is the other endpoint pair reachable
+// without a credential, and the first one is a free challenge generator.
+
+authRouter.post(
+  '/passkeys/challenge',
+  loginLimiter,
+  wrap(async (_req, res) => {
+    res.json(await passkeys.beginAuthentication());
+  }),
+);
+
+authRouter.post(
+  '/passkeys/login',
+  loginLimiter,
+  wrap(async (req, res) => {
+    const { ticket, response, device, cookie: wantsCookie } = req.body ?? {};
+    if (!response || typeof response !== 'object') {
+      throw badRequest('An authentication response is required', 'missing_response');
+    }
+
+    const verified = await passkeys.finishAuthentication(ticket, response);
+
+    // Possession of the key proves identity, not entitlement: an account whose
+    // app permission was withdrawn must not get back in with an old passkey.
+    if ((await ldap.stillPermitted(verified.username)) === 'revoked') {
+      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    }
+
+    const user: tokens.Principal = {
+      username: verified.username,
+      displayName: verified.displayName,
+      isAdmin: false,
+    };
+
+    await storage.ensureUserRoot(user.username);
+    const pair = await tokens.issueTokenPair(
+      user,
+      deviceLabel(device ?? verified.credentialName, req.headers['user-agent']),
+    );
+
+    // Browsers ask for the cookie form and never see the refresh token itself;
+    // native clients get it in the body and keep it in the Keychain.
+    if (wantsCookie === true) {
+      setSessionCookie(res, user.username, pair.refreshToken);
+      res.json(await sessionPayload(user, tokens.verifyAccessToken(pair.accessToken).sid));
+      return;
+    }
+
+    res.json({
+      ...pair,
+      roots: storage.rootsFor(user.username),
+      server: { name: 'Cloud', version: 1, appPath: config.appPath },
+    });
   }),
 );

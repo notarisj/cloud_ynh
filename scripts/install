@@ -20,12 +20,14 @@ ynh_app_setting_set --key=jwt_secret --value="$jwt_secret"
 # true/false and bytes.
 [ "$enable_shared"     = "1" ] && enable_shared="true"     || enable_shared="false"
 [ "$enable_thumbnails" = "1" ] && enable_thumbnails="true" || enable_thumbnails="false"
+[ "$enable_passkeys"   = "1" ] && enable_passkeys="true"   || enable_passkeys="false"
 
 user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
 max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
 
 ynh_app_setting_set --key=enable_shared     --value="$enable_shared"
 ynh_app_setting_set --key=enable_thumbnails --value="$enable_thumbnails"
+ynh_app_setting_set --key=enable_passkeys   --value="$enable_passkeys"
 
 #=================================================
 # INSTALL NODE.JS
@@ -54,16 +56,14 @@ cloud_build
 #=================================================
 # PREPARE THE DATA DIRECTORY
 #=================================================
-# users/   one private root per account, created on first login
-# shared/  common area, only when the admin asked for it
-# .meta/   trash, thumbnail cache, in-flight upload chunks, refresh tokens
+# users/   one private root per account, created on first login. Every file
+#          lives here, including the ones people share — sharing publishes an
+#          item by reference rather than moving it into a common folder.
+# .meta/   trash, thumbnail cache, in-flight upload chunks, refresh tokens,
+#          registered passkeys, and the share registry.
 ynh_script_progression "Preparing storage in $data_dir..."
 mkdir -p "$data_dir"/users
-mkdir -p "$data_dir"/.meta/{trash,thumbs,uploads,tokens}
-
-if [ "$enable_shared" = "true" ]; then
-    mkdir -p "$data_dir/shared"
-fi
+mkdir -p "$data_dir"/.meta/{trash,thumbs,uploads,tokens,passkeys}
 
 #=================================================
 # FILE PERMISSIONS
@@ -78,7 +78,10 @@ ynh_config_add_nginx
 
 ynh_script_progression "Configuring systemd service..."
 ynh_config_add_systemd
-yunohost service add "$app" --description="Cloud file storage" --log="/var/log/$app.log"
+# The service logs to the journal, so no --log path is declared: pointing
+# YunoHost at a file that is never written makes "yunohost service log" answer
+# with an empty file instead of the real output.
+yunohost service add "$app" --description="Cloud file storage"
 
 #=================================================
 # START

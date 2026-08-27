@@ -1,0 +1,19 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/tests.v1.schema.json
+
+test_format = 1.0
+
+[default]
+
+    # Every standard test applies: the app installs at a sub-path or at the
+    # root of a domain, supports multi-instance, change_url, backup/restore and
+    # a config panel.
+    exclude = []
+
+    [default.args]
+    # A quota and a modest per-file ceiling, so the tests exercise the paths an
+    # unlimited install never reaches.
+    user_quota = 5
+    max_upload = 2
+    enable_shared = 1
+    enable_thumbnails = 1
+    enable_passkeys = 1

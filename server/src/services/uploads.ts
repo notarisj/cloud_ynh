@@ -6,7 +6,7 @@ import { pipeline } from 'stream/promises';
 import { Transform, type Readable } from 'stream';
 import { config } from '../config';
 import { badRequest, conflict, forbidden, fromNodeError, notFound, tooLarge } from '../lib/errors';
-import { parentVPath, resolveVPath } from '../lib/vpath';
+import { assertWritable, parentVPath, resolveVPath } from '../lib/vpath';
 import * as storage from './storage';
 import type { ConflictPolicy, FileEntry } from './storage';
 
@@ -25,6 +25,8 @@ export const CHUNK_SIZE = 8 * 1024 * 1024;
 interface UploadMeta {
   id: string;
   username: string;
+  /** Account whose quota the finished file counts against. */
+  owner?: string;
   /** Virtual path of the destination file. */
   target: string;
   size: number;
@@ -124,14 +126,17 @@ export async function begin(
   }
 
   const resolved = await resolveVPath(username, target);
-  if (resolved.rel === '') throw badRequest('Upload target must be a file', 'invalid_path');
+  if (resolved.isRoot) throw badRequest('Upload target must be a file', 'invalid_path');
+  assertWritable(resolved);
 
-  // Fail before transferring gigabytes rather than after.
-  await storage.assertQuota(username, resolved.root, size);
+  // Fail before transferring gigabytes rather than after. The bytes are billed
+  // to whoever will own the finished file.
+  await storage.assertQuota(resolved.owner, size);
 
   const parent = parentVPath(resolved.vpath);
   if (parent === null) throw badRequest('Upload target must be inside a folder', 'invalid_path');
   const parentResolved = await resolveVPath(username, parent, { mustExist: true });
+  assertWritable(parentResolved);
   const parentStats = await fs.stat(parentResolved.abs).catch((e) => {
     throw fromNodeError(e);
   });
@@ -159,6 +164,7 @@ export async function begin(
   const meta: UploadMeta = {
     id,
     username,
+    owner: resolved.owner,
     target: resolved.vpath,
     size,
     chunkSize: CHUNK_SIZE,
@@ -285,7 +291,7 @@ export async function finish(username: string, id: string): Promise<FileEntry> {
   await fs.rm(sessionDir(id), { recursive: true, force: true }).catch(() => undefined);
   queues.delete(id);
 
-  storage.adjustUsage(username, meta.size);
+  storage.adjustUsage(meta.owner ?? username, meta.size);
   return storage.stat(username, `${parent}/${finalName}`);
 }
 

@@ -1,11 +1,18 @@
 /**
  * Client for the Cloud API.
  *
- * Authentication works differently here than in the iOS app. The browser
- * already has a YunoHost portal session, so instead of a password this client
- * exchanges that session for a short-lived access token at /api/sso/session,
- * keeps it in memory, and re-mints it when it expires. Nothing is written to
- * localStorage or a cookie: on reload the exchange simply happens again.
+ * There are two ways a browser gets a session, tried in this order:
+ *
+ *  1. The YunoHost portal. If the browser already has a portal session, the
+ *     SSO bridge exchanges it for a short-lived access token. Nothing is
+ *     stored: on reload the exchange simply happens again.
+ *  2. A passkey. Signing in with one leaves an HttpOnly cookie holding a
+ *     refresh token, which /auth/web/session trades for the same access token.
+ *     Script never sees that cookie, and the access token stays in memory.
+ *
+ * Either way the token lives in a variable, not in localStorage, and every
+ * request carries it in an Authorization header — so there is no ambient
+ * credential for another site to exploit.
  */
 
 // Vite's `base` is the sub-path the app is installed under ("/cloud/").
@@ -13,6 +20,7 @@ const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
 
 export const API = `${BASE}/api/v1`;
 const SSO_SESSION = `${BASE}/api/sso/session`;
+const WEB_SESSION = `${API}/auth/web/session`;
 
 //=================================================
 // Types — mirrors of the server's JSON shapes
@@ -31,6 +39,15 @@ export interface FileEntry {
   preview: PreviewKind;
   hasThumbnail: boolean;
   etag: string;
+
+  /** One of your own items that is published under "/shared". */
+  shared?: boolean;
+  /** Where it is published, e.g. "/shared/Holiday Photos". */
+  sharedAs?: string;
+  /** Who published it, when the item was reached through "/shared". */
+  sharedBy?: string;
+  /** Readable but not changeable — someone else's shared item. */
+  readOnly?: boolean;
 }
 
 export interface RootInfo {
@@ -50,14 +67,46 @@ export interface Session {
   user: { username: string; displayName: string; email?: string; isAdmin: boolean };
   roots: RootInfo[];
   usage: Usage;
-  limits: { maxUploadBytes: number; chunkSize: number };
+  limits: { maxUploadBytes: number; chunkSize: number; passkeys?: boolean };
+  /** How this session was obtained, which decides how signing out works. */
+  via: 'portal' | 'passkey';
 }
 
 export interface Listing {
   entry: FileEntry;
   entries: FileEntry[];
   parent: string | null;
+  /** Whether the caller may add to or change things in this folder. */
+  writable: boolean;
   ticket: { token: string; expiresIn: number };
+}
+
+export interface ShareSummary {
+  id: string;
+  /** Where the item lives, e.g. "/me/Photos/Trip". */
+  path: string;
+  /** Where it appears to everyone else, e.g. "/shared/Trip". */
+  sharedAs: string;
+  name: string;
+  sharedAt: number;
+}
+
+export interface PasskeySummary {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastUsedAt: number;
+  /** True when the passkey is synced across the user's devices. */
+  synced: boolean;
+}
+
+export interface DeviceSession {
+  id: string;
+  device: string;
+  createdAt: number;
+  lastUsedAt: number;
+  expiresAt: number;
+  current: boolean;
 }
 
 export interface TrashItem {
@@ -106,6 +155,83 @@ let tokenExpiresAt = 0;
 let inFlight: Promise<Session> | null = null;
 let cachedSession: Session | null = null;
 
+interface SessionResponse {
+  accessToken: string;
+  expiresIn: number;
+  user: Session['user'];
+  roots: RootInfo[];
+  usage: Usage;
+  limits: Session['limits'];
+}
+
+/** Adopt a session payload from whichever endpoint produced it. */
+function adopt(data: SessionResponse, via: Session['via']): Session {
+  accessToken = data.accessToken;
+  // Renew a minute early so a request never races its own expiry.
+  tokenExpiresAt = Date.now() + (data.expiresIn - 60) * 1000;
+  cachedSession = { user: data.user, roots: data.roots, usage: data.usage, limits: data.limits, via };
+  return cachedSession;
+}
+
+/**
+ * "Nobody is signed in" and "the server did not answer" are different
+ * problems, and they need different screens: one asks the user to sign in,
+ * the other asks them to try again. Conflating them puts somebody whose API
+ * is merely restarting on a sign-in screen that cannot help them.
+ */
+class ServerUnreachableError extends ApiError {
+  constructor(message = 'Could not reach the server.') {
+    super(0, 'unreachable', message);
+    this.name = 'ServerUnreachableError';
+  }
+}
+
+/** Exchange the YunoHost portal session for an access token. */
+async function portalSession(): Promise<Session> {
+  let response: Response;
+  try {
+    response = await fetch(SSO_SESSION, {
+      credentials: 'include',
+      headers: { accept: 'application/json' },
+    });
+  } catch {
+    // fetch only rejects when the request never got an answer at all.
+    throw new ServerUnreachableError();
+  }
+
+  if (response.status === 401 || response.status === 403) throw new SessionExpiredError();
+  if (response.status >= 500) {
+    throw new ServerUnreachableError('The server could not start a session.');
+  }
+
+  // SSOwat answers an expired portal session with a redirect to the login
+  // page, which fetch follows — so an HTML body with a 200, rather than a 401,
+  // is what an expired portal session actually looks like from here.
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) throw new SessionExpiredError();
+  if (!response.ok) throw new ApiError(response.status, 'sso_failed', 'Could not start a session.');
+
+  return adopt((await response.json()) as SessionResponse, 'portal');
+}
+
+/** Resume a passkey session from its HttpOnly cookie. */
+async function cookieSession(): Promise<Session> {
+  let response: Response;
+  try {
+    response = await fetch(WEB_SESSION, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { accept: 'application/json' },
+    });
+  } catch {
+    throw new ServerUnreachableError();
+  }
+
+  if (response.status >= 500) throw new ServerUnreachableError();
+  if (!response.ok) throw new SessionExpiredError();
+  return adopt((await response.json()) as SessionResponse, 'passkey');
+}
+
 /**
  * Fetch (or refresh) the access token. Concurrent callers share one request,
  * which matters on first paint when the sidebar, the listing and the usage bar
@@ -116,27 +242,18 @@ async function openSession(force = false): Promise<Session> {
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
-    const response = await fetch(SSO_SESSION, {
-      credentials: 'include',
-      headers: { accept: 'application/json' },
-    });
+    // A session that began with a passkey stays with the passkey: asking the
+    // portal first would bounce a passkey user through a login page they
+    // deliberately did not use.
+    if (cachedSession?.via === 'passkey') return cookieSession();
 
-    // SSOwat answers an expired portal session with a redirect to the login
-    // page, which fetch follows — so an HTML body, not a 401, is the signal.
-    const contentType = response.headers.get('content-type') ?? '';
-    if (response.status === 401 || !contentType.includes('application/json')) {
-      throw new SessionExpiredError();
+    try {
+      return await portalSession();
+    } catch (cause) {
+      if (!(cause instanceof SessionExpiredError)) throw cause;
+      // No portal session. There may still be a passkey one.
+      return cookieSession();
     }
-    if (!response.ok) {
-      throw new ApiError(response.status, 'sso_failed', 'Could not start a session.');
-    }
-
-    const data = (await response.json()) as Session & { accessToken: string; expiresIn: number };
-    accessToken = data.accessToken;
-    // Renew a minute early so a request never races its own expiry.
-    tokenExpiresAt = Date.now() + (data.expiresIn - 60) * 1000;
-    cachedSession = { user: data.user, roots: data.roots, usage: data.usage, limits: data.limits };
-    return cachedSession;
   })();
 
   try {
@@ -147,6 +264,9 @@ async function openSession(force = false): Promise<Session> {
 }
 
 export const getSession = (force = false) => openSession(force);
+
+/** Whether a session is currently held — used to gate the sign-in screen. */
+export const currentSession = (): Session | null => cachedSession;
 
 async function authHeader(): Promise<Record<string, string>> {
   await openSession();
@@ -237,6 +357,29 @@ export function remove(path: string, permanent = false): Promise<unknown> {
 
 export function usage(): Promise<Usage> {
   return request<{ usage: Usage }>('/auth/me').then((r) => r.usage);
+}
+
+//=================================================
+// Sharing
+//=================================================
+// Sharing publishes an item you own; it never moves or copies it. The file
+// stays in My Files, still counts against your storage, and stops being
+// visible to everyone else the moment you unshare it.
+
+export function listShares(): Promise<{ shares: ShareSummary[]; enabled: boolean }> {
+  return request('/files/shares');
+}
+
+export function share(path: string): Promise<{ share: ShareSummary; entry: FileEntry }> {
+  return request('/files/share', jsonBody({ path }));
+}
+
+export function unshare(path: string): Promise<unknown> {
+  return request(`/files/share?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+}
+
+export function unshareById(id: string): Promise<unknown> {
+  return request(`/files/share?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 //=================================================
@@ -334,4 +477,115 @@ export function completeUpload(id: string): Promise<FileEntry> {
 
 export function abortUpload(id: string): Promise<unknown> {
   return request(`/upload/${id}`, { method: 'DELETE' }).catch(() => undefined);
+}
+
+//=================================================
+// Passkeys
+//=================================================
+// The ceremonies are deliberately thin wrappers: the browser does the
+// cryptography, the server does the verification, and this module only carries
+// the two messages between them.
+
+export function listPasskeys(): Promise<{ passkeys: PasskeySummary[]; enabled: boolean }> {
+  return request('/auth/passkeys');
+}
+
+export function renamePasskey(id: string, name: string): Promise<{ passkey: PasskeySummary }> {
+  return request(`/auth/passkeys/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function removePasskey(id: string): Promise<unknown> {
+  return request(`/auth/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
+ * Enrol a passkey for the account this session belongs to.
+ *
+ * `startRegistration` is imported lazily so the WebAuthn helper is only
+ * downloaded by someone who actually opens the settings panel.
+ */
+export async function registerPasskey(name: string): Promise<PasskeySummary> {
+  const { startRegistration } = await import('@simplewebauthn/browser');
+  const { ticket, options } = await request<{ ticket: string; options: unknown }>(
+    '/auth/passkeys/register/options',
+    { method: 'POST' },
+  );
+
+  const response = await startRegistration({ optionsJSON: options as never });
+  const result = await request<{ passkey: PasskeySummary }>(
+    '/auth/passkeys/register',
+    jsonBody({ ticket, response, name }),
+  );
+  return result.passkey;
+}
+
+/** Whether this browser can do WebAuthn at all. */
+export async function passkeysUsable(): Promise<boolean> {
+  if (typeof window === 'undefined' || !window.PublicKeyCredential) return false;
+  const { browserSupportsWebAuthn } = await import('@simplewebauthn/browser');
+  return browserSupportsWebAuthn();
+}
+
+/**
+ * Sign in with a passkey, with no session to start from.
+ *
+ * The challenge endpoints are outside `request()` on purpose: that helper
+ * would try to mint an access token first, and the whole point here is that
+ * there is not one yet.
+ */
+export async function signInWithPasskey(): Promise<Session> {
+  const { startAuthentication } = await import('@simplewebauthn/browser');
+
+  const challenge = await fetch(`${API}/auth/passkeys/challenge`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: '{}',
+  });
+  if (!challenge.ok) throw await parseError(challenge);
+  const { ticket, options } = (await challenge.json()) as { ticket: string; options: unknown };
+
+  const assertion = await startAuthentication({ optionsJSON: options as never });
+
+  const verified = await fetch(`${API}/auth/passkeys/login`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    // `cookie: true` asks the server to keep the refresh token in an HttpOnly
+    // cookie rather than handing it to script.
+    body: JSON.stringify({ ticket, response: assertion, cookie: true }),
+  });
+  if (!verified.ok) throw await parseError(verified);
+
+  return adopt((await verified.json()) as SessionResponse, 'passkey');
+}
+
+//=================================================
+// Devices and sign-out
+//=================================================
+
+export function listSessions(): Promise<{ sessions: DeviceSession[] }> {
+  return request('/auth/sessions');
+}
+
+export function revokeSession(id: string): Promise<unknown> {
+  return request(`/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function revokeAllSessions(): Promise<unknown> {
+  return request('/auth/sessions', { method: 'DELETE' });
+}
+
+/** End a passkey session in this browser: revoke the token, drop the cookie. */
+export async function signOut(): Promise<void> {
+  await fetch(`${API}/auth/web/logout`, { method: 'POST', credentials: 'include' }).catch(
+    () => undefined,
+  );
+  accessToken = null;
+  tokenExpiresAt = 0;
+  cachedSession = null;
 }

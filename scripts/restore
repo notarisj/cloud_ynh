@@ -16,6 +16,8 @@ ynh_script_progression "Restoring application files..."
 ynh_restore "$install_dir"
 ynh_restore "$data_dir"
 
+mkdir -p "$data_dir"/.meta/{trash,thumbs,uploads,tokens,passkeys}
+
 # Chunk staging is per-process state; anything in flight at backup time is dead.
 ynh_safe_rm "$data_dir/.meta/uploads"
 mkdir -p "$data_dir/.meta/uploads"
@@ -30,7 +32,7 @@ ynh_config_add_nginx
 
 ynh_script_progression "Restoring systemd service..."
 ynh_config_add_systemd
-yunohost service add "$app" --description="Cloud file storage" --log="/var/log/$app.log"
+yunohost service add "$app" --description="Cloud file storage"
 
 #=================================================
 # START
