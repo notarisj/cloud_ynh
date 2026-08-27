@@ -1,0 +1,43 @@
+#!/bin/bash
+source ../settings/scripts/_common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# REINSTALL NODE.JS
+#=================================================
+ynh_script_progression "Reinstalling Node.js $nodejs_version..."
+ynh_nodejs_install --nodejs_version="$nodejs_version"
+node=$(which node)
+
+#=================================================
+# RESTORE FILES
+#=================================================
+ynh_script_progression "Restoring application files..."
+ynh_restore "$install_dir"
+ynh_restore "$data_dir"
+
+# Chunk staging is per-process state; anything in flight at backup time is dead.
+ynh_safe_rm "$data_dir/.meta/uploads"
+mkdir -p "$data_dir/.meta/uploads"
+
+cloud_fix_permissions
+
+#=================================================
+# RESTORE NGINX AND SYSTEMD
+#=================================================
+ynh_script_progression "Restoring nginx configuration..."
+ynh_config_add_nginx
+
+ynh_script_progression "Restoring systemd service..."
+ynh_config_add_systemd
+yunohost service add "$app" --description="Cloud file storage" --log="/var/log/$app.log"
+
+#=================================================
+# START
+#=================================================
+ynh_script_progression "Starting $app..."
+ynh_systemctl --service="$app" --action="start" --wait_until="listening on" --log_path="systemd"
+
+ynh_systemctl --service=nginx --action=reload
+
+ynh_script_progression "Restoration of $app completed"

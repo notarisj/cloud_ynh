@@ -1,0 +1,89 @@
+#!/bin/bash
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# GENERATE SECRETS
+#=================================================
+# proxy_secret proves a request came through nginx; jwt_secret signs the access
+# and refresh tokens handed to browsers and to the iOS app.
+proxy_secret=$(ynh_string_random --length=48)
+ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
+
+jwt_secret=$(ynh_string_random --length=64)
+ynh_app_setting_set --key=jwt_secret --value="$jwt_secret"
+
+#=================================================
+# NORMALISE INSTALL ANSWERS
+#=================================================
+# YunoHost hands booleans over as 1/0 and sizes in GB; the API wants
+# true/false and bytes.
+[ "$enable_shared"     = "1" ] && enable_shared="true"     || enable_shared="false"
+[ "$enable_thumbnails" = "1" ] && enable_thumbnails="true" || enable_thumbnails="false"
+
+user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
+max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
+
+ynh_app_setting_set --key=enable_shared     --value="$enable_shared"
+ynh_app_setting_set --key=enable_thumbnails --value="$enable_thumbnails"
+
+#=================================================
+# INSTALL NODE.JS
+#=================================================
+ynh_script_progression "Installing Node.js $nodejs_version..."
+ynh_nodejs_install --nodejs_version="$nodejs_version"
+node=$(which node)
+
+#=================================================
+# COPY SOURCES AND BUILD
+#=================================================
+ynh_script_progression "Copying sources..."
+cloud_sync_sources
+
+#=================================================
+# WRITE CONFIGURATION
+#=================================================
+# The .env has to exist before the build: nothing reads it at build time, but
+# writing it first means a failed build leaves a complete, inspectable install.
+ynh_script_progression "Writing configuration..."
+ynh_config_add --template=".env" --destination="$install_dir/server/.env"
+chmod 600 "$install_dir/server/.env"
+
+cloud_build
+
+#=================================================
+# PREPARE THE DATA DIRECTORY
+#=================================================
+# users/   one private root per account, created on first login
+# shared/  common area, only when the admin asked for it
+# .meta/   trash, thumbnail cache, in-flight upload chunks, refresh tokens
+ynh_script_progression "Preparing storage in $data_dir..."
+mkdir -p "$data_dir"/users
+mkdir -p "$data_dir"/.meta/{trash,thumbs,uploads,tokens}
+
+if [ "$enable_shared" = "true" ]; then
+    mkdir -p "$data_dir/shared"
+fi
+
+#=================================================
+# FILE PERMISSIONS
+#=================================================
+cloud_fix_permissions
+
+#=================================================
+# NGINX + SYSTEMD
+#=================================================
+ynh_script_progression "Configuring nginx..."
+ynh_config_add_nginx
+
+ynh_script_progression "Configuring systemd service..."
+ynh_config_add_systemd
+yunohost service add "$app" --description="Cloud file storage" --log="/var/log/$app.log"
+
+#=================================================
+# START
+#=================================================
+ynh_script_progression "Starting $app..."
+ynh_systemctl --service="$app" --action="start" --wait_until="listening on" --log_path="systemd"
+
+ynh_script_progression "Installation of $app completed"

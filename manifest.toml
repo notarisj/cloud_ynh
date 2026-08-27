@@ -1,0 +1,97 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/manifest.v2.schema.json
+
+packaging_format = 2
+
+id = "cloud"
+name = "Cloud"
+description.en = "Personal file storage with a web interface and a native iOS client — upload, browse, preview and download your files."
+description.fr = "Stockage de fichiers personnel avec interface web et client iOS natif."
+version = "1.0.0~ynh1"
+
+maintainers = []
+
+[upstream]
+license = "MIT"
+
+[integration]
+yunohost   = ">= 12.1.17"
+helpers_version = "2.1"
+architectures = ["amd64", "arm64"]
+multi_instance = true
+ldap = true
+sso = true
+disk = "500M"
+ram.build = "768M"
+ram.runtime = "256M"
+
+[install]
+
+  [install.domain]
+  type = "domain"
+
+  [install.path]
+  type = "path"
+  default = "/cloud"
+
+  [install.init_main_permission]
+  type = "group"
+  default = "all_users"
+
+  [install.user_quota]
+  ask.en = "Per-user storage quota in GB (0 = unlimited)"
+  type = "number"
+  default = 0
+  min = 0
+  max = 100000
+
+  [install.max_upload]
+  ask.en = "Maximum size of a single uploaded file, in GB"
+  type = "number"
+  default = 20
+  min = 1
+  max = 1000
+
+  [install.enable_shared]
+  ask.en = "Create a Shared folder visible to everyone who has access to this app?"
+  type = "boolean"
+  default = true
+
+  [install.enable_thumbnails]
+  ask.en = "Generate thumbnails and previews for images, videos and PDFs?"
+  type = "boolean"
+  default = true
+
+[resources]
+
+  # System user the API runs as. It owns install_dir and data_dir; no root needed.
+  [resources.system_user]
+
+  [resources.install_dir]
+  dir = "/var/www/__APP__"
+
+  # User files live here. Kept outside install_dir so upgrades never touch them.
+  [resources.data_dir]
+  dir = "/home/yunohost.app/__APP__"
+
+  [resources.ports]
+  main.default = 3010
+
+  [resources.apt]
+  packages = ["poppler-utils", "ffmpeg"]
+
+  [resources.permissions]
+
+    # The SPA and the SSO bridge endpoint — protected by SSOwat.
+    [resources.permissions.main]
+    url = "/"
+
+    # The versioned REST API used by native clients (iOS) and, after the SSO
+    # handshake, by the SPA itself. SSOwat must NOT gate this: native apps have
+    # no portal cookie. Authentication is enforced in-process by the JWT
+    # middleware, so "visitors" here means "reachable", not "public".
+    [resources.permissions.api]
+    url = "/api/v1"
+    allowed = "visitors"
+    auth_header = false
+    show_tile = false
+    protected = true

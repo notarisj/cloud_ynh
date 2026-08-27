@@ -1,0 +1,93 @@
+#!/bin/bash
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# STOP SERVICE
+#=================================================
+ynh_script_progression "Stopping $app for upgrade..."
+ynh_systemctl --service="$app" --action="stop"
+
+#=================================================
+# ENSURE SECRETS EXIST
+#=================================================
+# Both are preserved across upgrades: regenerating jwt_secret would sign every
+# iOS device out.
+proxy_secret=$(ynh_app_setting_get --key=proxy_secret)
+if [ -z "$proxy_secret" ]; then
+    proxy_secret=$(ynh_string_random --length=48)
+    ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
+fi
+
+jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
+if [ -z "$jwt_secret" ]; then
+    jwt_secret=$(ynh_string_random --length=64)
+    ynh_app_setting_set --key=jwt_secret --value="$jwt_secret"
+fi
+
+#=================================================
+# NORMALISE SETTINGS
+#=================================================
+# Installs from before these settings existed fall back to the defaults.
+[ -z "$enable_shared" ]     && enable_shared="true"
+[ -z "$enable_thumbnails" ] && enable_thumbnails="true"
+[ "$enable_shared"     = "1" ] && enable_shared="true"
+[ "$enable_thumbnails" = "1" ] && enable_thumbnails="true"
+[ "$enable_shared"     = "0" ] && enable_shared="false"
+[ "$enable_thumbnails" = "0" ] && enable_thumbnails="false"
+
+[ -z "$user_quota" ] && user_quota=0
+[ -z "$max_upload" ] && max_upload=20
+user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
+max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
+
+#=================================================
+# UPDATE NODE.JS
+#=================================================
+ynh_script_progression "Updating Node.js $nodejs_version..."
+ynh_nodejs_install --nodejs_version="$nodejs_version"
+node=$(which node)
+
+#=================================================
+# UPDATE SOURCES AND REBUILD
+#=================================================
+ynh_script_progression "Updating sources..."
+cloud_sync_sources
+
+ynh_script_progression "Updating configuration..."
+ynh_config_add --template=".env" --destination="$install_dir/server/.env"
+chmod 600 "$install_dir/server/.env"
+
+cloud_build
+
+#=================================================
+# ENSURE STORAGE LAYOUT
+#=================================================
+mkdir -p "$data_dir"/users
+mkdir -p "$data_dir"/.meta/{trash,thumbs,uploads,tokens}
+if [ "$enable_shared" = "true" ]; then
+    mkdir -p "$data_dir/shared"
+fi
+
+# Half-finished chunked uploads cannot survive a restart of the API.
+ynh_safe_rm "$data_dir/.meta/uploads"
+mkdir -p "$data_dir/.meta/uploads"
+
+cloud_fix_permissions
+
+#=================================================
+# UPDATE NGINX AND SYSTEMD
+#=================================================
+ynh_script_progression "Updating nginx configuration..."
+ynh_config_add_nginx
+
+ynh_script_progression "Updating systemd service..."
+ynh_config_add_systemd
+
+#=================================================
+# START
+#=================================================
+ynh_script_progression "Restarting $app..."
+ynh_systemctl --service="$app" --action="start" --wait_until="listening on" --log_path="systemd"
+
+ynh_script_progression "Upgrade of $app completed"

@@ -1,0 +1,53 @@
+#!/bin/bash
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# STOP SERVICE
+#=================================================
+ynh_script_progression "Stopping $app..."
+ynh_systemctl --service="$app" --action="stop"
+
+#=================================================
+# UPDATE NGINX
+#=================================================
+ynh_script_progression "Updating nginx configuration..."
+ynh_config_change_url_nginx
+
+#=================================================
+# REWRITE .env
+#=================================================
+# APP_PATH and APP_PUBLIC_URL are baked into the config, and the SPA's asset
+# base path is baked into the build — so both have to be redone.
+ynh_script_progression "Updating configuration..."
+
+proxy_secret=$(ynh_app_setting_get --key=proxy_secret)
+jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
+
+[ -z "$enable_shared" ]     && enable_shared="true"
+[ -z "$enable_thumbnails" ] && enable_thumbnails="true"
+[ -z "$user_quota" ] && user_quota=0
+[ -z "$max_upload" ] && max_upload=20
+user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
+max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
+
+ynh_config_add --template=".env" --destination="$install_dir/server/.env"
+chmod 600 "$install_dir/server/.env"
+
+#=================================================
+# REBUILD THE SPA FOR THE NEW BASE PATH
+#=================================================
+ynh_script_progression "Rebuilding web interface for $path..."
+pushd "$install_dir" >/dev/null
+    VITE_APP_PATH="$path/" npm run build 2>&1
+popd >/dev/null
+
+cloud_fix_permissions
+
+#=================================================
+# START
+#=================================================
+ynh_script_progression "Starting $app..."
+ynh_systemctl --service="$app" --action="start" --wait_until="listening on" --log_path="systemd"
+
+ynh_script_progression "Change of URL completed for $app"

@@ -1,0 +1,36 @@
+#!/bin/bash
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# STOP AND DEREGISTER THE SERVICE
+#=================================================
+ynh_script_progression "Stopping $app..."
+ynh_systemctl --service="$app" --action="stop"
+
+if ynh_hide_warnings yunohost service status "$app" >/dev/null; then
+    yunohost service remove "$app"
+fi
+ynh_config_remove_systemd
+
+#=================================================
+# REMOVE NGINX CONFIGURATION
+#=================================================
+ynh_script_progression "Removing nginx configuration..."
+ynh_config_remove_nginx
+
+#=================================================
+# REMOVE NODE.JS
+#=================================================
+ynh_script_progression "Removing Node.js..."
+ynh_nodejs_remove
+
+#=================================================
+# REMOVE FILES
+#=================================================
+# install_dir always goes. data_dir holds the users' own files, so YunoHost
+# only removes it when the admin explicitly asked to purge.
+ynh_script_progression "Removing application files..."
+ynh_safe_rm "$install_dir"
+
+ynh_script_progression "Removal of $app completed"

@@ -1,0 +1,43 @@
+[Unit]
+Description=Cloud file storage API — __APP__
+After=network.target slapd.service
+Wants=slapd.service
+
+[Service]
+Type=simple
+User=__APP__
+Group=__APP__
+WorkingDirectory=__INSTALL_DIR__/server
+Environment=NODE_ENV=production
+EnvironmentFile=__INSTALL_DIR__/server/.env
+ExecStart=__NODE__ __INSTALL_DIR__/server/dist/index.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=__APP__
+
+# Large directory listings and many concurrent range requests.
+LimitNOFILE=65535
+
+# ── Hardening ────────────────────────────────────────────
+# The service only reads and writes user files; it never needs privileges.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=__DATA_DIR__ __INSTALL_DIR__/server
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+# SystemCallFilter is intentionally omitted: Node.js needs a broad syscall set
+# and filtering it reliably breaks the runtime rather than hardening it.
+
+[Install]
+WantedBy=multi-user.target
