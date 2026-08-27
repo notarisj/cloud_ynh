@@ -5,7 +5,7 @@ packaging_format = 2
 id = "cloud"
 name = "Cloud"
 description.en = "Personal file storage with a web interface and a native iOS client — upload, browse, preview and share your files. Sign in with the YunoHost portal or with a passkey."
-description.fr = "Stockage de fichiers personnel avec interface web et client iOS natif. Connexion par le portail YunoHost ou par clé d\'accès."
+description.fr = "Stockage de fichiers personnel avec interface web et client iOS natif. Connexion par le portail YunoHost ou par clé d'accès."
 version = "1.1.0~ynh1"
 
 maintainers = []
@@ -63,7 +63,7 @@ ram.runtime = "256M"
 
   [install.enable_passkeys]
   ask.en = "Allow signing in with a passkey?"
-  ask.fr = "Autoriser la connexion par clé d\'accès ?"
+  ask.fr = "Autoriser la connexion par clé d'accès ?"
   help.en = "A passkey signs a user in with the fingerprint, face or PIN on their own device, without a password. The YunoHost portal keeps working either way."
   type = "boolean"
   default = true
