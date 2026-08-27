@@ -3,14 +3,13 @@ import { PromptDialog, Scrim } from './Dialogs';
 import { Icon } from './Icon';
 import { formatBytes, formatDate } from '../lib/format';
 import * as api from '../lib/api';
-import type { DeviceSession, PasskeySummary, Session, ShareSummary } from '../lib/api';
+import type { DeviceSession, PasskeySummary, Session } from '../lib/api';
 
 interface SettingsPanelProps {
   session: Session;
   onClose: () => void;
   /** Called after anything that changes what the file views should show. */
   onChanged: () => void;
-  onNavigate: (path: string) => void;
 }
 
 /**
@@ -21,10 +20,11 @@ interface SettingsPanelProps {
  * published to everyone else. Each one is listed with a way to revoke it,
  * because a list you cannot act on is just an anxiety.
  */
-export function SettingsPanel({ session, onClose, onChanged, onNavigate }: SettingsPanelProps) {
+export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProps) {
   const [passkeys, setPasskeys] = useState<PasskeySummary[] | null>(null);
+  const [ssoDisabled, setSsoDisabled] = useState(false);
+  const [storeFile, setStoreFile] = useState('');
   const [sessions, setSessions] = useState<DeviceSession[] | null>(null);
-  const [shares, setShares] = useState<ShareSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [supported, setSupported] = useState(false);
@@ -34,14 +34,14 @@ export function SettingsPanel({ session, onClose, onChanged, onNavigate }: Setti
 
   const refresh = useCallback(async () => {
     setError(null);
-    const [keys, devices, published] = await Promise.all([
-      passkeysEnabled ? api.listPasskeys().catch(() => ({ passkeys: [] })) : Promise.resolve({ passkeys: [] }),
+    const [keys, devices] = await Promise.all([
+      passkeysEnabled ? api.listPasskeys().catch(() => ({ passkeys: [], ssoDisabled: false, storeFile: '' })) : Promise.resolve({ passkeys: [], ssoDisabled: false, storeFile: '' }),
       api.listSessions().catch(() => ({ sessions: [] })),
-      api.listShares().catch(() => ({ shares: [] })),
     ]);
     setPasskeys(keys.passkeys);
+    setSsoDisabled(keys.ssoDisabled || false);
+    setStoreFile(keys.storeFile || '');
     setSessions(devices.sessions);
-    setShares(published.shares);
   }, [passkeysEnabled]);
 
   useEffect(() => {
@@ -179,51 +179,41 @@ export function SettingsPanel({ session, onClose, onChanged, onNavigate }: Setti
                 <Icon name="check" size={15} weight={2.2} />
                 Add a passkey
               </button>
+
+              {passkeys && passkeys.length > 0 && (
+                <div style={{ marginTop: '24px' }}>
+                  <h4 style={{ margin: '0 0 8px', fontSize: '14px', fontWeight: 600 }}>Disable SSOwat Login</h4>
+                  {ssoDisabled ? (
+                    <>
+                      <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        SSOwat login is currently disabled. To re-enable it via SSH:
+                      </p>
+                      <code style={{ display: 'block', padding: '8px', background: 'var(--sheet-bg, #fff)', borderRadius: '4px', fontSize: '12px', wordBreak: 'break-all', userSelect: 'all', border: '1px solid var(--border)' }}>
+                        sudo jq '.ssoDisabled = false' {storeFile} &gt; /tmp/pk.json &amp;&amp; sudo mv /tmp/pk.json {storeFile} &amp;&amp; sudo systemctl restart cloud
+                      </code>
+                    </>
+                  ) : (
+                    <>
+                      <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        You can disable standard YunoHost SSO login for this app and only allow passkeys.
+                      </p>
+                      <button
+                        type="button"
+                        className="button button--danger"
+                        onClick={() => run(() => api.setSsoDisabled(true))}
+                        disabled={busy}
+                      >
+                        <Icon name="warning" size={15} />
+                        Disable SSO login
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </section>
           )}
 
-          <section className="sheet__section">
-            <h3>Shared by you</h3>
-            <p className="sheet__lede">
-              Shared items stay in My Files and still count towards your storage. Everyone with
-              access to this app can read them until you stop sharing.
-            </p>
 
-            {shares === null ? (
-              <div className="spinner" />
-            ) : shares.length === 0 ? (
-              <p className="sheet__empty">You have not shared anything.</p>
-            ) : (
-              shares.map((item) => (
-                <div key={item.id} className="sheet__row">
-                  <Icon name="shared" size={18} style={{ color: 'var(--accent)' }} />
-                  <div className="sheet__rowtext">
-                    <strong>{item.name}</strong>
-                    <span>{item.path.replace(/^\/me/, 'My Files')} · shared {formatDate(item.sharedAt)}</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="iconbutton"
-                    aria-label={`Show ${item.name}`}
-                    title="Show in My Files"
-                    onClick={() => {
-                      onNavigate(item.path.split('/').slice(0, -1).join('/') || '/me');
-                      onClose();
-                    }}
-                  >
-                    <Icon name="folder" size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    className="button"
-                    onClick={() => run(() => api.unshareById(item.id))}
-                  >
-                    Stop sharing
-                  </button>
-                </div>
-              ))
-            )}
-          </section>
 
           <section className="sheet__section">
             <h3>Signed-in devices</h3>

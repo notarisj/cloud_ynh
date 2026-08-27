@@ -339,7 +339,20 @@ authRouter.get(
   requireAuth,
   wrap(async (req, res) => {
     const user = principal(req);
-    res.json({ passkeys: await passkeys.list(user.username), enabled: passkeys.enabled() });
+    const info = await passkeys.list(user.username);
+    res.json({ ...info, enabled: passkeys.enabled() });
+  }),
+);
+
+authRouter.post(
+  '/passkeys/sso/disable',
+  requireAuth,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const { disabled } = req.body ?? {};
+    if (typeof disabled !== 'boolean') throw badRequest('disabled flag is required', 'missing_flag');
+    await passkeys.setSsoDisabled(user.username, disabled);
+    res.status(204).end();
   }),
 );
 

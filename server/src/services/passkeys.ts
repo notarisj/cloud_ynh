@@ -59,10 +59,16 @@ interface PasskeyFile {
   /** Opaque, random user handle. Never the username: it leaves the server. */
   handle: string;
   credentials: PasskeyRecord[];
+  ssoDisabled?: boolean;
 }
 
 export function enabled(): boolean {
   return config.passkeys.enabled;
+}
+
+export async function isSsoDisabled(username: string): Promise<boolean> {
+  const file = await read(username);
+  return file?.ssoDisabled ?? false;
 }
 
 function assertEnabled(): void {
@@ -427,10 +433,16 @@ export interface PasskeySummary {
   synced: boolean;
 }
 
-export async function list(username: string): Promise<PasskeySummary[]> {
+export interface PasskeyListInfo {
+  passkeys: PasskeySummary[];
+  ssoDisabled: boolean;
+  storeFile: string;
+}
+
+export async function list(username: string): Promise<PasskeyListInfo> {
   assertUsername(username);
   const file = await read(username);
-  return (file?.credentials ?? [])
+  const passkeys = (file?.credentials ?? [])
     .map((credential) => ({
       id: credential.id,
       name: credential.name,
@@ -439,6 +451,30 @@ export async function list(username: string): Promise<PasskeySummary[]> {
       synced: credential.deviceType === 'multiDevice',
     }))
     .sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+
+  return {
+    passkeys,
+    ssoDisabled: file?.ssoDisabled ?? false,
+    storeFile: storeFile(username),
+  };
+}
+
+export async function setSsoDisabled(username: string, disabled: boolean): Promise<void> {
+  assertUsername(username);
+  await serialise(username, async () => {
+    const file = await read(username);
+    if (!file || file.credentials.length === 0) {
+      if (disabled) throw badRequest('Cannot disable SSO without a passkey', 'no_passkeys');
+    }
+    const toWrite = file ?? {
+      username,
+      displayName: username,
+      handle: crypto.randomBytes(32).toString('base64url'),
+      credentials: [],
+    };
+    toWrite.ssoDisabled = disabled;
+    await write(toWrite);
+  });
 }
 
 export async function rename(username: string, id: string, name: string): Promise<PasskeySummary> {

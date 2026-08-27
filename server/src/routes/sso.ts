@@ -43,6 +43,10 @@ ssoRouter.get(
       username = identity.username;
       displayName = identity.displayName ?? identity.username;
       email = identity.email;
+
+      if (await passkeys.isSsoDisabled(username)) {
+        throw unauthorized('SSO login is disabled for this account. Please use a passkey.', 'sso_disabled');
+      }
     } else {
       username = config.auth.devUser;
       displayName = config.auth.devUser;

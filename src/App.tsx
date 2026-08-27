@@ -907,7 +907,6 @@ export function App() {
             void refresh();
             refreshUsage();
           }}
-          onNavigate={navigate}
         />
       )}
 

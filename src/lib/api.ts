@@ -486,7 +486,7 @@ export function abortUpload(id: string): Promise<unknown> {
 // cryptography, the server does the verification, and this module only carries
 // the two messages between them.
 
-export function listPasskeys(): Promise<{ passkeys: PasskeySummary[]; enabled: boolean }> {
+export function listPasskeys(): Promise<{ passkeys: PasskeySummary[]; enabled: boolean; ssoDisabled: boolean; storeFile: string }> {
   return request('/auth/passkeys');
 }
 
@@ -500,6 +500,14 @@ export function renamePasskey(id: string, name: string): Promise<{ passkey: Pass
 
 export function removePasskey(id: string): Promise<unknown> {
   return request(`/auth/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function setSsoDisabled(disabled: boolean): Promise<void> {
+  return request('/auth/passkeys/sso/disable', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ disabled }),
+  });
 }
 
 /**
