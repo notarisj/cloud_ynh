@@ -47,7 +47,7 @@ fi
 #=================================================
 ynh_script_progression "Rebuilding web interface for $path..."
 pushd "$install_dir" >/dev/null
-    VITE_APP_PATH="$path/" npm run build 2>&1
+    VITE_APP_PATH="$(cloud_base_path)" npm run build 2>&1
 popd >/dev/null
 
 cloud_fix_permissions

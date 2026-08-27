@@ -26,7 +26,16 @@ NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=true
+
+# The users' files live at /home/yunohost.app/__APP__, which is inside the very
+# tree ProtectHome= hides. "tmpfs" still replaces /home with an empty mount —
+# so no other account's home is visible to this service — and BindPaths mounts
+# just this app's data directory back in. Plain "ProtectHome=true" would leave
+# the service unable to see its own storage, and it exits rather than serve
+# from a directory that is not there.
+ProtectHome=tmpfs
+BindPaths=__DATA_DIR__
+
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

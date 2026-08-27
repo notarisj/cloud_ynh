@@ -32,13 +32,24 @@ cloud_sync_sources() {
         "$YNH_APP_BASEDIR/" "$install_dir/"
 }
 
+# Vite's `base` — the sub-path the SPA is served under, with exactly one
+# trailing slash. At the root of a domain $path is "/", and the obvious
+# "$path/" would produce "//": the browser reads that as protocol-relative and
+# goes looking for a host literally called "assets".
+cloud_base_path() {
+    echo "${path%/}/"
+}
+
 # Build the SPA and the API. Both are TypeScript; dev deps are pruned after.
 cloud_build() {
+    local base
+    base="$(cloud_base_path)"
+
     ynh_script_progression "Building web interface..."
     pushd "$install_dir" >/dev/null
-        VITE_APP_PATH="$path/" ynh_hide_warnings npm ci --no-audit --no-fund 2>&1 \
-            || VITE_APP_PATH="$path/" npm install --no-audit --no-fund 2>&1
-        VITE_APP_PATH="$path/" npm run build 2>&1
+        VITE_APP_PATH="$base" ynh_hide_warnings npm ci --no-audit --no-fund 2>&1 \
+            || VITE_APP_PATH="$base" npm install --no-audit --no-fund 2>&1
+        VITE_APP_PATH="$base" npm run build 2>&1
         npm prune --omit=dev 2>&1
     popd >/dev/null
 
