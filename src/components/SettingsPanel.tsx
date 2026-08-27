@@ -188,7 +188,7 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
                       <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
                         SSOwat login is currently disabled. To re-enable it via SSH:
                       </p>
-                      <code style={{ display: 'block', padding: '8px', background: 'var(--sheet-bg, #fff)', borderRadius: '4px', fontSize: '12px', wordBreak: 'break-all', userSelect: 'all', border: '1px solid var(--border)' }}>
+                      <code style={{ display: 'block', padding: '8px', background: 'var(--bg-field)', borderRadius: '4px', fontSize: '12px', wordBreak: 'break-all', userSelect: 'all', border: '1px solid var(--separator)' }}>
                         sudo jq '.ssoDisabled = false' {storeFile} &gt; /tmp/pk.json &amp;&amp; sudo mv /tmp/pk.json {storeFile} &amp;&amp; sudo systemctl restart cloud
                       </code>
                     </>
