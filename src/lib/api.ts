@@ -63,6 +63,13 @@ export interface Usage {
   availableBytes: number;
 }
 
+export interface User {
+  username: string;
+  displayName: string;
+  isAdmin: boolean;
+  source: 'local' | 'ldap';
+}
+
 export interface Session {
   user: { username: string; displayName: string; email?: string; isAdmin: boolean };
   roots: RootInfo[];
@@ -89,6 +96,8 @@ export interface ShareSummary {
   sharedAs: string;
   name: string;
   sharedAt: number;
+  visibility: 'all' | 'users';
+  sharedWith: string[];
 }
 
 export interface PasskeySummary {
@@ -370,8 +379,8 @@ export function listShares(): Promise<{ shares: ShareSummary[]; enabled: boolean
   return request('/files/shares');
 }
 
-export function share(path: string): Promise<{ share: ShareSummary; entry: FileEntry }> {
-  return request('/files/share', jsonBody({ path }));
+export function share(path: string, visibility: 'all' | 'users' = 'all', sharedWith: string[] = []): Promise<{ share: ShareSummary; entry: FileEntry }> {
+  return request('/files/share', jsonBody({ path, visibility, sharedWith }));
 }
 
 export function unshare(path: string): Promise<unknown> {
@@ -428,6 +437,22 @@ export async function fetchText(path: string, maxBytes = 512 * 1024): Promise<st
   });
   if (!response.ok && response.status !== 206) throw await parseError(response);
   return response.text();
+}
+
+//=================================================
+// Users
+//=================================================
+
+export function getUsers(): Promise<{ users: User[] }> {
+  return request('/users');
+}
+
+export function createUser(username: string, password: string, isAdmin = false): Promise<{ user: User }> {
+  return request('/users', jsonBody({ username, password, isAdmin }));
+}
+
+export function deleteUser(username: string): Promise<unknown> {
+  return request(`/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
 }
 
 //=================================================

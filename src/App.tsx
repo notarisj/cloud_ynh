@@ -15,10 +15,12 @@ import { Icon } from './components/Icon';
 import { PreviewOverlay } from './components/PreviewOverlay';
 import { SelectionBar } from './components/SelectionBar';
 import { SettingsPanel } from './components/SettingsPanel';
+import { ShareDialog } from './components/ShareDialog';
 import { Sidebar } from './components/Sidebar';
 import { SignIn } from './components/SignIn';
 import { TrashView } from './components/TrashView';
 import { UploadTray } from './components/UploadTray';
+import { UsersView } from './components/UsersView';
 
 type View = 'browse' | 'trash' | 'search';
 
@@ -35,6 +37,7 @@ type Dialog =
   | { kind: 'confirmPurge'; item: TrashItem }
   | { kind: 'confirmEmptyTrash' }
   | { kind: 'pick'; operation: 'move' | 'copy'; entries: FileEntry[] }
+  | { kind: 'share'; entries: FileEntry[] }
   | null;
 
 //=================================================
@@ -88,6 +91,7 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usersOpen, setUsersOpen] = useState(false);
 
   const filePicker = useRef<HTMLInputElement>(null);
   const folderPicker = useRef<HTMLInputElement>(null);
@@ -277,9 +281,9 @@ export function App() {
       setSelection(new Set());
     });
 
-  const doShare = (targets: FileEntry[]) =>
+  const doShare = (targets: FileEntry[], visibility: 'all' | 'users' = 'all', sharedWith: string[] = []) =>
     runAction(async () => {
-      for (const target of targets) await api.share(target.path);
+      for (const target of targets) await api.share(target.path, visibility, sharedWith);
       setNotice(
         targets.length === 1
           ? `“${targets[0]?.name}” is now in Shared. It stays in My Files.`
@@ -511,7 +515,7 @@ export function App() {
       case 'refresh': void refresh(); break;
       case 'open': if (entry) open(entry); break;
       case 'download': download(targets()); break;
-      case 'share': void doShare(targets()); break;
+      case 'share': setDialog({ kind: 'share', entries: targets() }); break;
       case 'unshare': void doUnshare(targets()); break;
       case 'copyTo': setDialog({ kind: 'pick', operation: 'copy', entries: targets() }); break;
       case 'moveTo': setDialog({ kind: 'pick', operation: 'move', entries: targets() }); break;
@@ -568,6 +572,10 @@ export function App() {
         onShowTrash={() => {
           setView('trash');
           setSelection(new Set());
+          setSidebarOpen(false);
+        }}
+        onShowUsers={() => {
+          setUsersOpen(true);
           setSidebarOpen(false);
         }}
         onShowSettings={() => {
@@ -784,7 +792,7 @@ export function App() {
           selected={selected}
           writable={writable && selected.every((entry) => !entry.readOnly && !entry.sharedBy)}
           onDownload={() => download(selected)}
-          onShare={() => void doShare(selected)}
+          onShare={() => setDialog({ kind: 'share', entries: selected })}
           onUnshare={() => void doUnshare(selected)}
           onMove={() => setDialog({ kind: 'pick', operation: 'move', entries: selected })}
           onCopy={() => setDialog({ kind: 'pick', operation: 'copy', entries: selected })}
@@ -870,6 +878,18 @@ export function App() {
         />
       )}
 
+      {dialog?.kind === 'share' && (
+        <ShareDialog
+          entries={dialog.entries}
+          onCancel={() => setDialog(null)}
+          onConfirm={(visibility, sharedWith) => {
+            const entries = dialog.entries;
+            setDialog(null);
+            void doShare(entries, visibility, sharedWith);
+          }}
+        />
+      )}
+
       {dialog?.kind === 'confirmPurge' && (
         <ConfirmDialog
           title={`Delete “${dialog.item.name}” permanently?`}
@@ -907,6 +927,13 @@ export function App() {
             void refresh();
             refreshUsage();
           }}
+        />
+      )}
+
+      {usersOpen && (
+        <UsersView
+          session={session}
+          onClose={() => setUsersOpen(false)}
         />
       )}
 

@@ -8,6 +8,7 @@ import * as ldap from '../services/ldap';
 import * as passkeys from '../services/passkeys';
 import * as storage from '../services/storage';
 import * as tokens from '../services/tokens';
+import * as users from '../services/users';
 
 export const authRouter: Router = Router();
 
@@ -44,10 +45,26 @@ authRouter.post(
       throw badRequest('username and password are required', 'missing_credentials');
     }
 
-    const user = await ldap.authenticate(username, password);
+    let user;
+    try {
+      user = await ldap.authenticate(username, password);
+    } catch (err) {
+      if ((err as any).code === 'unauthorized') {
+        user = await users.authenticateLocal(username, password);
+      } else {
+        throw err;
+      }
+    }
+
     await storage.ensureUserRoot(user.username);
 
-    const pair = await tokens.issueTokenPair(user, deviceLabel(device, req.headers['user-agent']));
+    const principal = {
+      username: user.username,
+      displayName: 'displayName' in user ? (user as any).displayName : user.username,
+      isAdmin: user.isAdmin,
+    };
+
+    const pair = await tokens.issueTokenPair(principal, deviceLabel(device, req.headers['user-agent']));
 
     res.json({
       ...pair,
@@ -74,12 +91,13 @@ authRouter.post(
     // Rotate first: a replayed token is rejected here before anything else runs.
     const rotated = await tokens.rotateRefreshToken(username, refreshToken);
 
-    // An account whose app permission was withdrawn should stop working now,
-    // not in thirty days when the refresh token finally expires.
-    const permission = await ldap.stillPermitted(username);
-    if (permission === 'revoked') {
-      await tokens.revokeSession(username, rotated.sid);
-      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    const isLocal = !!users.getLocalUser(username);
+    if (!isLocal) {
+      const permission = await ldap.stillPermitted(username);
+      if (permission === 'revoked') {
+        await tokens.revokeSession(username, rotated.sid);
+        throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+      }
     }
 
     const user: tokens.Principal = {
@@ -278,10 +296,13 @@ authRouter.post(
       throw err;
     }
 
-    if ((await ldap.stillPermitted(cookie.username)) === 'revoked') {
-      await tokens.revokeSession(cookie.username, rotated.sid);
-      clearSessionCookie(res);
-      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    const isLocal = !!users.getLocalUser(cookie.username);
+    if (!isLocal) {
+      if ((await ldap.stillPermitted(cookie.username)) === 'revoked') {
+        await tokens.revokeSession(cookie.username, rotated.sid);
+        clearSessionCookie(res);
+        throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+      }
     }
 
     const user: tokens.Principal = {
@@ -403,8 +424,11 @@ authRouter.post(
 
     // Possession of the key proves identity, not entitlement: an account whose
     // app permission was withdrawn must not get back in with an old passkey.
-    if ((await ldap.stillPermitted(verified.username)) === 'revoked') {
-      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    const isLocal = !!users.getLocalUser(verified.username);
+    if (!isLocal) {
+      if ((await ldap.stillPermitted(verified.username)) === 'revoked') {
+        throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+      }
     }
 
     const user: tokens.Principal = {

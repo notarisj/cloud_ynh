@@ -126,6 +126,8 @@ filesRouter.get(
           sharedAs: `/shared/${record.slug}`,
           name: record.slug,
           sharedAt: record.sharedAt,
+          visibility: record.visibility || 'all',
+          sharedWith: record.sharedWith || [],
         })),
       enabled: shares.enabled(),
     });
@@ -144,9 +146,12 @@ filesRouter.post(
     }
     if (parsed.rel === '') throw badRequest('Cannot share the whole of My Files', 'invalid_path');
 
+    const visibility = req.body?.visibility === 'users' ? 'users' : 'all';
+    const sharedWith = Array.isArray(req.body?.sharedWith) ? req.body.sharedWith : [];
+
     // Prove it exists and is readable before writing a record for it.
     const entry = await storage.stat(user.username, parsed.vpath);
-    const record = await shares.share(user.username, parsed.rel, entry.name);
+    const record = await shares.share(user.username, parsed.rel, entry.name, visibility, sharedWith);
 
     res.status(201).json({
       share: {
@@ -155,6 +160,8 @@ filesRouter.post(
         sharedAs: `/shared/${record.slug}`,
         name: record.slug,
         sharedAt: record.sharedAt,
+        visibility: record.visibility || 'all',
+        sharedWith: record.sharedWith || [],
       },
       entry: await storage.stat(user.username, parsed.vpath),
     });

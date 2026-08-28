@@ -155,6 +155,12 @@ function parseSharedPath(username: string, segments: string[]): ResolvedPath {
   const record = shares.bySlug(slug);
   if (!record) throw notFound('That shared item is no longer available', 'not_shared');
 
+  if (record.visibility === 'users' && record.owner !== username) {
+    if (!record.sharedWith?.includes(username)) {
+      throw forbidden('This shared item is not accessible to you', 'not_shared_with_you');
+    }
+  }
+
   const restSegments = segments.slice(2);
   for (const segment of restSegments) assertValidName(segment);
 

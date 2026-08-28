@@ -300,6 +300,10 @@ async function listShareIndex(username: string, options: ListOptions): Promise<L
   const entries: FileEntry[] = [];
 
   for (const record of shares.all()) {
+    if (record.visibility === 'users' && record.owner !== username && !record.sharedWith?.includes(username)) {
+      continue; // Not shared with this user
+    }
+
     const stats = await fs.stat(shares.absOf(record)).catch(() => null);
     if (!stats) continue;
     if (!stats.isDirectory() && !stats.isFile()) continue;

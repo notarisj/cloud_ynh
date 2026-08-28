@@ -32,6 +32,8 @@ export interface ShareRecord {
    */
   slug: string;
   sharedAt: number;
+  visibility?: 'all' | 'users';
+  sharedWith?: string[];
 }
 
 const registryFile = () => config.storage.sharesFile;
@@ -183,7 +185,13 @@ function slugify(name: string, taken: Set<string>): string {
  * Publish one item. The caller has already proved the path exists and belongs
  * to them; this only records it.
  */
-export function share(owner: string, rel: string, name: string): Promise<ShareRecord> {
+export function share(
+  owner: string,
+  rel: string,
+  name: string,
+  visibility: 'all' | 'users' = 'all',
+  sharedWith: string[] = []
+): Promise<ShareRecord> {
   if (!enabled()) throw forbidden('Sharing is disabled on this server', 'sharing_disabled');
   if (rel.length === 0) throw badRequest('Cannot share a whole root', 'invalid_path');
 
@@ -191,7 +199,13 @@ export function share(owner: string, rel: string, name: string): Promise<ShareRe
     const records = load();
 
     const existing = records.find((record) => record.owner === owner && record.rel === rel);
-    if (existing) return existing;
+    if (existing) {
+      // Update existing visibility settings
+      existing.visibility = visibility;
+      existing.sharedWith = sharedWith;
+      await persist(records);
+      return existing;
+    }
 
     // Sharing a folder that already sits inside a shared folder would show the
     // same bytes twice under two names.
@@ -208,6 +222,8 @@ export function share(owner: string, rel: string, name: string): Promise<ShareRe
       rel,
       slug: slugify(name, new Set(records.map((r) => r.slug))),
       sharedAt: Date.now(),
+      visibility,
+      sharedWith,
     };
 
     await persist([...records, record]);

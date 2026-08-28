@@ -12,6 +12,7 @@ import { ssoRouter } from './routes/sso';
 import { syncRouter } from './routes/sync';
 import { trashRouter } from './routes/trash';
 import { uploadRouter } from './routes/upload';
+import { usersRouter } from './routes/users';
 import * as trash from './services/trash';
 import * as uploads from './services/uploads';
 import * as thumbs from './services/thumbs';
@@ -90,6 +91,7 @@ app.use('/api/v1/files', requireProxySecret, json, filesRouter);
 app.use('/api/v1/trash', requireProxySecret, json, trashRouter);
 app.use('/api/v1/sync', requireProxySecret, syncRouter);
 app.use('/api/v1/media', requireProxySecret, mediaRouter);
+app.use('/api/v1/users', requireProxySecret, json, usersRouter);
 
 // Upload: JSON on the control endpoints, untouched streams on the chunk PUT
 // and the multipart POST.

@@ -148,3 +148,32 @@ export async function stillPermitted(username: string): Promise<PermissionCheck>
     await client.unbind().catch(() => undefined);
   }
 }
+
+/** List all YunoHost users from the LDAP directory. */
+export async function listLdapUsers(): Promise<LdapUser[]> {
+  const client = new Client({ url: config.auth.ldapUrl, timeout: 5000, connectTimeout: 5000 });
+  try {
+    const { searchEntries } = await client.search('ou=users,dc=yunohost,dc=org', {
+      scope: 'one',
+      filter: '(uid=*)',
+      attributes: ['uid', 'cn', 'displayName', 'mail', 'memberOf'],
+    });
+
+    return searchEntries.map(entry => {
+      const username = attr(entry, 'uid')[0] ?? '';
+      const memberOf = attr(entry, 'memberOf').map(cnOf);
+      const isAdmin = memberOf.includes(config.auth.adminGroup.toLowerCase());
+      return {
+        username,
+        displayName: attr(entry, 'displayName')[0] ?? attr(entry, 'cn')[0] ?? username,
+        email: attr(entry, 'mail')[0],
+        isAdmin,
+      };
+    }).filter(user => user.username.length > 0);
+  } catch (err) {
+    console.warn(`[cloud/ldap] failed to list users:`, err);
+    return [];
+  } finally {
+    await client.unbind().catch(() => undefined);
+  }
+}
