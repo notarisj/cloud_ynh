@@ -101,6 +101,7 @@ export const config = {
     ldapDnTemplate: str('LDAP_USER_DN_TEMPLATE', 'uid={username},ou=users,dc=yunohost,dc=org'),
     requiredPermission: str('REQUIRED_PERMISSION', 'cloud.main'),
     adminGroup: str('ADMIN_GROUP', 'admins'),
+    adminUsers: str('ADMIN_USERS', '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     loginRateLimit: int('LOGIN_RATE_LIMIT', 10),
     /** Identity every request is attributed to when running outside production. */
     devUser: str('DEV_USER', 'dev'),

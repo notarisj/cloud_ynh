@@ -71,15 +71,32 @@ export async function authenticate(username: string, password: string): Promise<
     const { searchEntries } = await client.search(dn, {
       scope: 'base',
       filter: '(objectClass=*)',
-      attributes: ['uid', 'cn', 'displayName', 'mail', 'memberOf'],
+      attributes: ['uid', 'cn', 'displayName', 'mail', 'permission'],
     });
 
     const entry = searchEntries[0];
     if (!entry) throw unauthorized('Invalid username or password');
 
-    const memberOf = attr(entry, 'memberOf').map(cnOf);
-    const isAdmin = memberOf.includes(config.auth.adminGroup.toLowerCase());
-    const hasPermission = memberOf.includes(config.auth.requiredPermission.toLowerCase());
+    // Fetch the admins group to see who is an admin
+    let isAdmin = false;
+    try {
+      const { searchEntries: groupEntries } = await client.search('ou=groups,dc=yunohost,dc=org', {
+        scope: 'one',
+        filter: `(cn=${config.auth.adminGroup})`,
+        attributes: ['memberUid'],
+      });
+      if (groupEntries[0]) {
+        const members = attr(groupEntries[0], 'memberUid').map(m => m.toLowerCase());
+        if (members.includes(username.toLowerCase())) {
+          isAdmin = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[cloud/ldap] failed to fetch admin group:', e);
+    }
+
+    const permissions = attr(entry, 'permission').map(cnOf);
+    const hasPermission = permissions.includes(config.auth.requiredPermission.toLowerCase());
 
     if (!hasPermission && !isAdmin) {
       throw forbidden(
@@ -149,20 +166,57 @@ export async function stillPermitted(username: string): Promise<PermissionCheck>
   }
 }
 
+/** Check if a user has a specific YunoHost permission (works anonymously) */
+export async function hasPermission(username: string, permission: string): Promise<boolean> {
+  if (!isPlausibleUsername(username)) return false;
+  const client = new Client({ url: config.auth.ldapUrl, timeout: 5000, connectTimeout: 5000 });
+  try {
+    const { searchEntries } = await client.search('ou=permission,dc=yunohost,dc=org', {
+      scope: 'one',
+      filter: `(cn=${permission})`,
+      attributes: ['inheritPermission'],
+    });
+    const entry = searchEntries[0];
+    if (!entry) return false;
+    const dns = attr(entry, 'inheritPermission').map((d) => d.toLowerCase().replace(/\s*,\s*/g, ','));
+    const expected = config.auth.ldapDnTemplate.replace('{username}', username).toLowerCase().replace(/\s*,\s*/g, ',');
+    return dns.includes(expected);
+  } catch {
+    return false;
+  } finally {
+    await client.unbind().catch(() => undefined);
+  }
+}
+
 /** List all YunoHost users from the LDAP directory. */
 export async function listLdapUsers(): Promise<LdapUser[]> {
   const client = new Client({ url: config.auth.ldapUrl, timeout: 5000, connectTimeout: 5000 });
   try {
+    // 1. Fetch the admins group to see who is an admin
+    let adminUids: string[] = [];
+    try {
+      const { searchEntries: groupEntries } = await client.search('ou=groups,dc=yunohost,dc=org', {
+        scope: 'one',
+        filter: `(cn=${config.auth.adminGroup})`,
+        attributes: ['memberUid'],
+      });
+      if (groupEntries[0]) {
+        adminUids = attr(groupEntries[0], 'memberUid').map(u => u.toLowerCase());
+      }
+    } catch (e) {
+      console.warn('[cloud/ldap] failed to fetch admin group:', e);
+    }
+
+    // 2. Fetch the users
     const { searchEntries } = await client.search('ou=users,dc=yunohost,dc=org', {
       scope: 'one',
       filter: '(uid=*)',
-      attributes: ['uid', 'cn', 'displayName', 'mail', 'memberOf'],
+      attributes: ['uid', 'cn', 'displayName', 'mail'],
     });
 
     return searchEntries.map(entry => {
       const username = attr(entry, 'uid')[0] ?? '';
-      const memberOf = attr(entry, 'memberOf').map(cnOf);
-      const isAdmin = memberOf.includes(config.auth.adminGroup.toLowerCase());
+      const isAdmin = adminUids.includes(username.toLowerCase());
       return {
         username,
         displayName: attr(entry, 'displayName')[0] ?? attr(entry, 'cn')[0] ?? username,
@@ -173,6 +227,52 @@ export async function listLdapUsers(): Promise<LdapUser[]> {
   } catch (err) {
     console.warn(`[cloud/ldap] failed to list users:`, err);
     return [];
+  } finally {
+    await client.unbind().catch(() => undefined);
+  }
+}
+
+/** Get a single YunoHost user's details without requiring their password. */
+export async function getLdapUser(username: string): Promise<LdapUser | null> {
+  if (!isPlausibleUsername(username)) return null;
+
+  const client = new Client({ url: config.auth.ldapUrl, timeout: 5000, connectTimeout: 5000 });
+  try {
+    let isAdmin = false;
+    try {
+      const { searchEntries: groupEntries } = await client.search('ou=groups,dc=yunohost,dc=org', {
+        scope: 'one',
+        filter: `(cn=${config.auth.adminGroup})`,
+        attributes: ['memberUid'],
+      });
+      if (groupEntries[0]) {
+        const members = attr(groupEntries[0], 'memberUid').map(m => m.toLowerCase());
+        if (members.includes(username.toLowerCase())) {
+          isAdmin = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[cloud/ldap] failed to fetch admin group:', e);
+    }
+
+    let displayName = username;
+    let email: string | undefined;
+    try {
+      const { searchEntries } = await client.search('ou=users,dc=yunohost,dc=org', {
+        scope: 'one',
+        filter: `(uid=${username})`,
+        attributes: ['uid', 'cn', 'displayName', 'mail'],
+      });
+      const entry = searchEntries[0];
+      if (entry) {
+        displayName = attr(entry, 'displayName')[0] ?? attr(entry, 'cn')[0] ?? username;
+        email = attr(entry, 'mail')[0];
+      }
+    } catch (e) {
+      console.warn('[cloud/ldap] failed to fetch user info:', e);
+    }
+
+    return { username, displayName, email, isAdmin };
   } finally {
     await client.unbind().catch(() => undefined);
   }
