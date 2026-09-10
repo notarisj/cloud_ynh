@@ -35,18 +35,30 @@ export function ContextMenu({ x, y, actions, onSelect, onDismiss }: ContextMenuP
   }, [x, y]);
 
   useEffect(() => {
-    const dismiss = () => onDismiss();
+    // Anywhere *except* the menu itself. Dismissing on every pointerdown —
+    // even one that landed on a menu item — unmounts the menu before the click
+    // that follows can reach it, which quietly turns every action in here into
+    // a no-op: the menu closes, and nothing happens.
+    const dismiss = (event: PointerEvent) => {
+      if (ref.current?.contains(event.target as Node)) return;
+      onDismiss();
+    };
+
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onDismiss();
     };
 
-    // `capture` so a click anywhere closes the menu before the click lands.
+    // `capture` so a click outside closes the menu before that click lands.
+    // A resize moves everything under the menu, so it stops making sense
+    // wherever it is — that one closes unconditionally.
+    const close = () => onDismiss();
+
     window.addEventListener('pointerdown', dismiss, { capture: true });
-    window.addEventListener('resize', dismiss);
+    window.addEventListener('resize', close);
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('pointerdown', dismiss, { capture: true });
-      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('resize', close);
       window.removeEventListener('keydown', onKey);
     };
   }, [onDismiss]);
@@ -57,7 +69,6 @@ export function ContextMenu({ x, y, actions, onSelect, onDismiss }: ContextMenuP
       className="menu"
       role="menu"
       style={position}
-      onPointerDown={(event) => event.stopPropagation()}
     >
       {actions.map((action) => (
         <div key={action.id}>

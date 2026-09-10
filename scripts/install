@@ -76,6 +76,9 @@ cloud_fix_permissions
 ynh_script_progression "Configuring nginx..."
 ynh_config_add_nginx
 
+ynh_script_progression "Installing the rescue command..."
+cloud_install_rescue
+
 ynh_script_progression "Configuring systemd service..."
 ynh_config_add_systemd
 # The service logs to the journal, so no --log path is declared: pointing

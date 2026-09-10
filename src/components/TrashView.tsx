@@ -23,6 +23,10 @@ export function TrashView({ items, retentionDays, onRestore, onPurge }: TrashVie
   return (
     <div className="list">
       <div className="list__header" role="presentation">
+        {/* The file list has a checkbox in this column. Nothing here is
+            selectable, but the cell still has to exist: the row grid is shared,
+            and a missing cell shifts every other one out of its column. */}
+        <span className="list__check" />
         <span>Name</span>
         <span style={{ justifySelf: 'end' }}>Size</span>
         <span>Deleted</span>
@@ -38,6 +42,7 @@ export function TrashView({ items, retentionDays, onRestore, onPurge }: TrashVie
 
         return (
           <div key={item.id} className="row" style={{ cursor: 'default' }}>
+            <span className="list__check" />
             <span className="row__name">
               <span className="row__icon">
                 <Icon name={name} size={19} weight={1.4} style={{ color: tint }} />

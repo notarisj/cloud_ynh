@@ -8,6 +8,7 @@ import { breadcrumbs, splitExtension } from './lib/format';
 import { loadPreferences, savePreferences } from './lib/prefs';
 import { filesFromDrop, uploads } from './lib/uploads';
 import { ContextMenu, type MenuAction } from './components/ContextMenu';
+import { Breadcrumbs } from './components/Breadcrumbs';
 import { ConfirmDialog, PromptDialog } from './components/Dialogs';
 import { FileBrowser, type ViewMode } from './components/FileBrowser';
 import { FolderPicker } from './components/FolderPicker';
@@ -63,6 +64,7 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
+  const [signInReason, setSignInReason] = useState<string | null>(null);
 
   const initial = useMemo(readHash, []);
   const [view, setView] = useState<View>(initial.view);
@@ -124,6 +126,7 @@ export function App() {
       })
       .catch((cause: unknown) => {
         if (cause instanceof SessionExpiredError) {
+          setSignInReason(cause.reason);
           setSignedOut(true);
           return;
         }
@@ -156,6 +159,7 @@ export function App() {
 
   const reportError = useCallback((cause: unknown) => {
     if (cause instanceof SessionExpiredError) {
+      setSignInReason(cause.reason);
       setExpired(true);
       return;
     }
@@ -543,7 +547,9 @@ export function App() {
   }
 
   if (signedOut || expired) {
-    return <SignIn expired={expired} onSignedIn={() => window.location.reload()} />;
+    return (
+      <SignIn expired={expired} reason={signInReason} onSignedIn={() => window.location.reload()} />
+    );
   }
 
   if (!session) {
@@ -607,16 +613,7 @@ export function App() {
           </button>
 
           {view === 'browse' ? (
-            <nav className="crumbs" aria-label="Breadcrumb">
-              {crumbs.map((crumb, index) => (
-                <span key={crumb.path} style={{ display: 'contents' }}>
-                  {index > 0 && <Icon name="chevronRight" size={13} weight={2.2} className="crumbs__sep" />}
-                  <button type="button" className="crumbs__item" onClick={() => navigate(crumb.path)}>
-                    {crumb.label}
-                  </button>
-                </span>
-              ))}
-            </nav>
+            <Breadcrumbs crumbs={crumbs} onNavigate={navigate} />
           ) : (
             <h1 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>
               {view === 'trash' ? 'Recently Deleted' : `Results for “${query}”`}

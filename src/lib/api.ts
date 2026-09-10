@@ -147,9 +147,17 @@ export class ApiError extends Error {
 
 /** Raised when the portal session itself is gone and the user must sign in again. */
 export class SessionExpiredError extends ApiError {
-  constructor() {
-    super(401, 'sso_expired', 'Your session has expired.');
+  /**
+   * What to tell the user on the sign-in screen. "Your session expired" and
+   * "you turned the portal off for this account" both land here, and only one
+   * of them is fixed by signing in through the portal again.
+   */
+  readonly reason: string | null;
+
+  constructor(reason: string | null = null, code = 'sso_expired') {
+    super(401, code, reason ?? 'Your session has expired.');
     this.name = 'SessionExpiredError';
+    this.reason = reason;
   }
 }
 
@@ -208,7 +216,17 @@ async function portalSession(): Promise<Session> {
     throw new ServerUnreachableError();
   }
 
-  if (response.status === 401 || response.status === 403) throw new SessionExpiredError();
+  if (response.status === 401 || response.status === 403) {
+    // The bridge says *why* it refused. "This account is passkey-only" has to
+    // reach the sign-in screen intact, or the user is told to go and use the
+    // portal that just turned them away.
+    const refusal = await response
+      .json()
+      .then((body: { error?: string; code?: string }) => body)
+      .catch(() => ({}) as { error?: string; code?: string });
+
+    throw new SessionExpiredError(refusal.error ?? null, refusal.code ?? 'sso_expired');
+  }
   if (response.status >= 500) {
     throw new ServerUnreachableError('The server could not start a session.');
   }
@@ -260,8 +278,18 @@ async function openSession(force = false): Promise<Session> {
       return await portalSession();
     } catch (cause) {
       if (!(cause instanceof SessionExpiredError)) throw cause;
+
       // No portal session. There may still be a passkey one.
-      return cookieSession();
+      try {
+        return await cookieSession();
+      } catch (fallback) {
+        // Both doors are shut, and only one of them said anything useful:
+        // "this account is passkey-only" has to survive the second failure,
+        // or the user is left reading "your session expired" and going back
+        // to the portal that just turned them away.
+        if (cause.reason && fallback instanceof SessionExpiredError && !fallback.reason) throw cause;
+        throw fallback;
+      }
     }
   })();
 
@@ -511,7 +539,16 @@ export function abortUpload(id: string): Promise<unknown> {
 // cryptography, the server does the verification, and this module only carries
 // the two messages between them.
 
-export function listPasskeys(): Promise<{ passkeys: PasskeySummary[]; enabled: boolean; ssoDisabled: boolean; storeFile: string }> {
+export interface PasskeyOverview {
+  passkeys: PasskeySummary[];
+  enabled: boolean;
+  ssoDisabled: boolean;
+  storeFile: string;
+  /** What an admin runs on the server to give this account the portal back. */
+  rescueCommand: string;
+}
+
+export function listPasskeys(): Promise<PasskeyOverview> {
   return request('/auth/passkeys');
 }
 
@@ -527,12 +564,38 @@ export function removePasskey(id: string): Promise<unknown> {
   return request(`/auth/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export function setSsoDisabled(disabled: boolean): Promise<void> {
-  return request('/auth/passkeys/sso/disable', {
+/**
+ * Turn portal sign-in off for this account, or back on.
+ *
+ * Turning it off asks for the passkey first. That is not ceremony for its own
+ * sake: it is the difference between "a passkey was created once" and "this
+ * passkey works, on this device, right now" — and the second is the only one
+ * worth betting your access on.
+ */
+export async function setSsoDisabled(
+  disabled: boolean,
+): Promise<{ ssoDisabled: boolean; rescueCommand: string }> {
+  if (!disabled) {
+    return request('/auth/passkeys/sso/disable', jsonBody({ disabled: false }));
+  }
+
+  const { startAuthentication } = await import('@simplewebauthn/browser');
+
+  const challenge = await fetch(`${API}/auth/passkeys/challenge`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ disabled }),
+    credentials: 'include',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: '{}',
   });
+  if (!challenge.ok) throw await parseError(challenge);
+  const { ticket, options } = (await challenge.json()) as { ticket: string; options: unknown };
+
+  const assertion = await startAuthentication({ optionsJSON: options as never });
+
+  return request(
+    '/auth/passkeys/sso/disable',
+    jsonBody({ disabled: true, ticket, response: assertion }),
+  );
 }
 
 /**

@@ -100,6 +100,9 @@ cloud_fix_permissions
 ynh_script_progression "Updating nginx configuration..."
 ynh_config_add_nginx
 
+ynh_script_progression "Updating the rescue command..."
+cloud_install_rescue
+
 ynh_script_progression "Updating systemd service..."
 ynh_config_add_systemd
 

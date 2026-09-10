@@ -69,6 +69,35 @@ portal cookie so the iOS app and passkey sign-in can work, and every route
 behind it requires a valid token. Restricting it would break native clients
 without making anything safer.
 
+## Passkey-only accounts, and the way back in
+
+A user who has registered a passkey can turn portal sign-in off for their own
+account, in Settings. From then on the YunoHost portal will not open this app
+for them: the passkey is the only way in. The app asks them to confirm with the
+passkey before it does this, so a key that does not actually work cannot be
+what they are left with, and it shows them the recovery command before the
+switch as well as after.
+
+Only the account itself is affected. Everyone else on the server signs in
+through the portal exactly as before.
+
+When someone does lose that passkey, the way back is on the server, as root:
+
+```bash
+sudo cloud-rescue allow-portal alice     # give one account the portal back
+sudo cloud-rescue status                 # who is passkey-only, and how many keys they hold
+sudo cloud-rescue list alice             # that account's passkeys, when each was last used
+sudo cloud-rescue reset alice            # remove every passkey and re-enable the portal
+```
+
+Deliberately there is no network path to this. An account with no passkey
+cannot be switched to passkey-only — `deny-portal` refuses — so the command
+cannot be used to lock somebody out either.
+
+The commands edit `.meta/passkeys/<user>.json` in place, keeping its owner and
+mode, and the service re-reads that file on every request. No restart is
+needed. On a second instance the command is named after it: `cloud__2-rescue`.
+
 ## Passkeys
 
 A passkey is registered from an already-authenticated session — a user signs in

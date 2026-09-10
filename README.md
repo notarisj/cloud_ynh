@@ -21,7 +21,10 @@ Packaged for YunoHost 12, following the same conventions as `wg-man_ynh`.
 - **Resumable uploads.** Large files are sent in 8 MB chunks straight to their
   final offset on disk, so an interrupted upload resumes instead of restarting.
 - **Passkeys.** Sign in with the fingerprint, face or PIN on your own device.
-  The private key never leaves it and the server stores only a public key.
+  The private key never leaves it and the server stores only a public key. An
+  account that has one can turn portal sign-in off entirely and become
+  passkey-only; `cloud-rescue allow-portal <user>`, as root on the server, is
+  the way back if that key is ever lost.
 - **A REST API** for native clients, authenticated against YunoHost's LDAP.
 - **SSO for the browser.** The portal session is exchanged for a token; nobody
   has to type a password twice.
@@ -29,7 +32,13 @@ Packaged for YunoHost 12, following the same conventions as `wg-man_ynh`.
 ## Install
 
 ```bash
-sudo yunohost app install https://github.com/<you>/cloud_ynh
+sudo yunohost app install "https://github.com/<you>/cloud_ynh"
+```
+
+## Update
+
+```bash
+sudo yunohost app upgrade cloud -u "https://github.com/notarisj/cloud_ynh"
 ```
 
 You are asked for:

@@ -24,6 +24,12 @@ export interface UploadTask {
   /** Bytes confirmed written by the server. */
   sent: number;
   total: number;
+  /**
+   * Bytes per second, smoothed. Zero until there is enough of a sample to say
+   * anything honest — a figure that swings between 40 MB/s and 2 MB/s every
+   * chunk is worse than no figure at all.
+   */
+  speed: number;
   error?: string;
   entry?: FileEntry;
 }
@@ -57,6 +63,40 @@ class UploadManager {
     for (const listener of this.listeners) listener(snapshot);
   }
 
+  /**
+   * Progress, and the rate that comes with it.
+   *
+   * Chunks confirm in bursts — three in flight, all landing together — so the
+   * instantaneous rate is far too jumpy to show anyone. This keeps an
+   * exponential moving average over samples at least half a second apart,
+   * which settles quickly and then stays still enough to read.
+   */
+  private recordProgress(id: string, sent: number): void {
+    const now = Date.now();
+    const sample = this.rates.get(id);
+
+    if (!sample) {
+      this.rates.set(id, { at: now, sent, speed: 0 });
+      this.update(id, { sent });
+      return;
+    }
+
+    const elapsed = (now - sample.at) / 1000;
+    if (elapsed < 0.5) {
+      this.update(id, { sent });
+      return;
+    }
+
+    const instant = Math.max(0, sent - sample.sent) / elapsed;
+    // First real sample stands on its own; after that, blend.
+    const speed = sample.speed === 0 ? instant : sample.speed * 0.7 + instant * 0.3;
+
+    this.rates.set(id, { at: now, sent, speed });
+    this.update(id, { sent, speed });
+  }
+
+  private rates = new Map<string, { at: number; sent: number; speed: number }>();
+
   private update(id: string, patch: Partial<UploadTask>): void {
     const task = this.tasks.find((t) => t.id === id);
     if (!task) return;
@@ -83,6 +123,7 @@ class UploadManager {
         state: 'queued',
         sent: 0,
         total: file.size,
+        speed: 0,
       });
       ids.push(id);
       this.conflictPolicies.set(id, conflict);
@@ -104,7 +145,8 @@ class UploadManager {
   retry(id: string): void {
     const task = this.tasks.find((t) => t.id === id);
     if (!task || (task.state !== 'failed' && task.state !== 'cancelled')) return;
-    this.update(id, { state: 'queued', sent: 0, error: undefined });
+    this.rates.delete(id);
+    this.update(id, { state: 'queued', sent: 0, speed: 0, error: undefined });
     void this.pump();
   }
 
@@ -160,19 +202,20 @@ class UploadManager {
       }
 
       const entry = await api.completeUpload(session.id);
-      this.update(id, { state: 'done', sent: task.file.size, entry });
+      this.update(id, { state: 'done', sent: task.file.size, speed: 0, entry });
     } catch (error) {
       if (controller.signal.aborted) {
         if (sessionId) void api.abortUpload(sessionId);
-        this.update(id, { state: 'cancelled' });
+        this.update(id, { state: 'cancelled', speed: 0 });
         return;
       }
       const message = error instanceof Error ? error.message : 'Upload failed';
       // The session is left on the server: a retry resumes it rather than
       // starting over, which is the whole point of the chunked API.
-      this.update(id, { state: 'failed', error: message });
+      this.update(id, { state: 'failed', speed: 0, error: message });
     } finally {
       this.controllers.delete(id);
+      this.rates.delete(id);
     }
   }
 
@@ -207,7 +250,7 @@ class UploadManager {
         }
 
         confirmed += end - start;
-        this.update(id, { sent: Math.min(confirmed, file.size) });
+        this.recordProgress(id, Math.min(confirmed, file.size));
       }
     };
 

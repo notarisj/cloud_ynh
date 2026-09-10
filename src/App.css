@@ -268,28 +268,53 @@
   align-items: center;
   gap: 1px;
   min-width: 0;
-  overflow: hidden;
+  /* The path folds itself once it gets deep, so this is only the last resort
+     for a very narrow window — and a scrollbar under the toolbar would be
+     noise, so it is hidden. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+
+.crumbs::-webkit-scrollbar { display: none; }
 
 .crumbs__item {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* Never shrink. A crumb squeezed down to "Untitl" answers nothing, and six
+     of them answer nothing six times; a name that really is long ellipsises at
+     a width you can still read instead. */
+  flex: none;
+  max-width: 20ch;
   padding: 3px 7px;
   border-radius: var(--radius-sm);
   font-size: 13.5px;
   color: var(--text-secondary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: background 120ms var(--ease), color 120ms var(--ease);
 }
 
 .crumbs__item:hover { background: var(--bg-hover); color: var(--text); }
 
+/* Where you actually are gets the most room and the most weight. */
 .crumbs__item:last-child {
+  max-width: 32ch;
   color: var(--text);
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.crumbs__more {
+  padding: 3px 5px;
+  color: var(--text-tertiary);
+}
+
+.crumbs__more:hover { color: var(--text); }
+
+@media (max-width: 860px) {
+  .crumbs__item { max-width: 14ch; }
+  .crumbs__item:last-child { max-width: 20ch; }
 }
 
 .crumbs__sep { color: var(--text-tertiary); flex: none; }
@@ -882,6 +907,24 @@
   color: var(--text-tertiary);
 }
 
+.tray__totals {
+  flex: none;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+}
+
+/* Sits under the heading rather than beside it: on a narrow tray the two
+   together are wider than the row, and the heading is the part that must not
+   be pushed out. */
+.tray__eta {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
 .tray__status--error { color: var(--red); }
 .tray__status--done { color: var(--green); }
 
@@ -1276,6 +1319,44 @@
 }
 
 .sheet__section > .button { margin: 10px 0 4px; }
+
+.sheet__subsection {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--separator);
+}
+
+.sheet__subsection h4 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* A command to be copied out of the app and run somewhere else. Monospace,
+   selectable in one gesture, and visually separate from the prose around it. */
+.rescue {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  background: var(--bg-field);
+}
+
+.rescue code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  user-select: all;
+  cursor: text;
+}
+
+.rescue .iconbutton { flex: none; width: 26px; height: 26px; }
 
 .pill {
   padding: 1px 7px;

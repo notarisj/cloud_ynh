@@ -76,3 +76,29 @@ export function breadcrumbs(vpath: string, rootLabels: Record<string, string>): 
     path: '/' + segments.slice(0, index + 1).join('/'),
   }));
 }
+
+/** "4.2 MB/s". Empty while the rate is still unknown, so callers can omit it. */
+export function formatRate(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '';
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+/**
+ * Time left, rounded to something a person would actually say.
+ *
+ * Precision here is false comfort: the number is an extrapolation from the
+ * last few seconds of a connection that is about to change its mind. Coarse
+ * buckets age better than "1:47 remaining" counting down unevenly.
+ */
+export function formatRemaining(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  if (seconds < 10) return 'a few seconds left';
+  if (seconds < 60) return `${Math.round(seconds / 5) * 5} seconds left`;
+
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min left`;
+
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} hr left` : `${hours} hr ${rest} min left`;
+}

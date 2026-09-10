@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { PromptDialog, Scrim } from './Dialogs';
+import { ConfirmDialog, PromptDialog, Scrim } from './Dialogs';
 import { Icon } from './Icon';
 import { formatBytes, formatDate } from '../lib/format';
 import * as api from '../lib/api';
@@ -23,7 +23,8 @@ interface SettingsPanelProps {
 export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProps) {
   const [passkeys, setPasskeys] = useState<PasskeySummary[] | null>(null);
   const [ssoDisabled, setSsoDisabled] = useState(false);
-  const [storeFile, setStoreFile] = useState('');
+  const [rescueCommand, setRescueCommand] = useState('');
+  const [confirmingSsoOff, setConfirmingSsoOff] = useState(false);
   const [sessions, setSessions] = useState<DeviceSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,13 +35,14 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
 
   const refresh = useCallback(async () => {
     setError(null);
+    const empty = { passkeys: [], ssoDisabled: false, rescueCommand: '' };
     const [keys, devices] = await Promise.all([
-      passkeysEnabled ? api.listPasskeys().catch(() => ({ passkeys: [], ssoDisabled: false, storeFile: '' })) : Promise.resolve({ passkeys: [], ssoDisabled: false, storeFile: '' }),
+      passkeysEnabled ? api.listPasskeys().catch(() => empty) : Promise.resolve(empty),
       api.listSessions().catch(() => ({ sessions: [] })),
     ]);
     setPasskeys(keys.passkeys);
     setSsoDisabled(keys.ssoDisabled || false);
-    setStoreFile(keys.storeFile || '');
+    setRescueCommand(keys.rescueCommand || '');
     setSessions(devices.sessions);
   }, [passkeysEnabled]);
 
@@ -181,30 +183,48 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
               </button>
 
               {passkeys && passkeys.length > 0 && (
-                <div style={{ marginTop: '24px' }}>
-                  <h4 style={{ margin: '0 0 8px', fontSize: '14px', fontWeight: 600 }}>Disable SSOwat Login</h4>
+                <div className="sheet__subsection">
+                  <h4>Portal sign-in</h4>
+
                   {ssoDisabled ? (
                     <>
-                      <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                        SSOwat login is currently disabled. To re-enable it via SSH:
+                      <p className="sheet__lede">
+                        This account is <strong>passkey only</strong>. The YunoHost portal will not
+                        open this app for you, on any device, until someone runs the command below
+                        on the server.
                       </p>
-                      <code style={{ display: 'block', padding: '8px', background: 'var(--bg-field)', borderRadius: '4px', fontSize: '12px', wordBreak: 'break-all', userSelect: 'all', border: '1px solid var(--separator)' }}>
-                        sudo jq '.ssoDisabled = false' {storeFile} &gt; /tmp/pk.json &amp;&amp; sudo mv /tmp/pk.json {storeFile} &amp;&amp; sudo systemctl restart cloud
-                      </code>
+                      <RescueCommand command={rescueCommand} />
+                      <button
+                        type="button"
+                        className="button"
+                        onClick={() => run(() => api.setSsoDisabled(false))}
+                        disabled={busy}
+                      >
+                        <Icon name="home" size={15} />
+                        Turn portal sign-in back on
+                      </button>
                     </>
                   ) : (
                     <>
-                      <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                        You can disable standard YunoHost SSO login for this app and only allow passkeys.
+                      <p className="sheet__lede">
+                        Turn this off and the YunoHost portal stops opening this app for your
+                        account — your passkey becomes the only way in. Nothing else changes, and
+                        other people on this server are unaffected.
                       </p>
+                      <p className="sheet__lede">
+                        Keep this command somewhere you can reach without this app. It is how an
+                        administrator gives you the portal back if the passkey is ever lost:
+                      </p>
+                      <RescueCommand command={rescueCommand} />
                       <button
                         type="button"
                         className="button button--danger"
-                        onClick={() => run(() => api.setSsoDisabled(true))}
-                        disabled={busy}
+                        onClick={() => setConfirmingSsoOff(true)}
+                        disabled={busy || !supported}
+                        title={supported ? undefined : 'This browser cannot use passkeys'}
                       >
                         <Icon name="warning" size={15} />
-                        Disable SSO login
+                        Turn off portal sign-in
                       </button>
                     </>
                   )}
@@ -258,6 +278,25 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
         </div>
       </div>
 
+      {confirmingSsoOff && (
+        <ConfirmDialog
+          title="Make this account passkey only?"
+          message={
+            'You will be asked for your passkey now, to prove it works on this device before the ' +
+            'portal is closed. After that, the YunoHost portal will no longer open this app for ' +
+            'your account — only your passkey will. If you lose it, an administrator has to run ' +
+            `"${rescueCommand}" on the server to let you back in.`
+          }
+          confirmLabel="Confirm with passkey"
+          destructive
+          onCancel={() => setConfirmingSsoOff(false)}
+          onConfirm={() => {
+            setConfirmingSsoOff(false);
+            run(() => api.setSsoDisabled(true));
+          }}
+        />
+      )}
+
       {renaming && (
         <PromptDialog
           title="Name this passkey"
@@ -284,4 +323,37 @@ function defaultPasskeyName(): string {
   if (/Android/.test(agent)) return 'Android device';
   if (/Windows/.test(agent)) return 'Windows device';
   return 'This device';
+}
+
+/**
+ * A command meant to be read off the screen and typed into a terminal
+ * elsewhere — quite possibly on a phone, looking at a laptop. It selects whole
+ * on one click, and copies on another, because retyping a command wrong is how
+ * a lockout becomes an afternoon.
+ */
+function RescueCommand({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!command) return null;
+
+  return (
+    <div className="rescue">
+      <code onClick={(event) => window.getSelection()?.selectAllChildren(event.currentTarget)}>
+        {command}
+      </code>
+      <button
+        type="button"
+        className="iconbutton"
+        aria-label="Copy the command"
+        title={copied ? 'Copied' : 'Copy'}
+        onClick={() => {
+          void navigator.clipboard
+            ?.writeText(command)
+            .then(() => setCopied(true))
+            .catch(() => undefined);
+        }}
+      >
+        <Icon name={copied ? 'check' : 'copy'} size={15} />
+      </button>
+    </div>
+  );
 }

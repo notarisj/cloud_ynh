@@ -365,15 +365,44 @@ authRouter.get(
   }),
 );
 
+/**
+ * Turn portal sign-in off for this account, leaving the passkey as the only
+ * way in — or turn it back on.
+ *
+ * Switching it OFF requires a passkey assertion made moments ago, in the same
+ * browser: registering a key proves a key was created, not that the user can
+ * still use it. Somebody who enrolled a passkey into a password manager they
+ * cannot reopen would otherwise be one click from needing SSH to get back in.
+ * Turning it back ON is the safe direction and needs nothing extra.
+ */
 authRouter.post(
   '/passkeys/sso/disable',
   requireAuth,
   wrap(async (req, res) => {
     const user = principal(req);
-    const { disabled } = req.body ?? {};
+    const { disabled, ticket, response } = req.body ?? {};
     if (typeof disabled !== 'boolean') throw badRequest('disabled flag is required', 'missing_flag');
+
+    if (disabled) {
+      if (!response || typeof response !== 'object') {
+        throw badRequest(
+          'Confirm with your passkey before turning off portal sign-in',
+          'passkey_confirmation_required',
+        );
+      }
+
+      const verified = await passkeys.finishAuthentication(ticket, response);
+      if (verified.username !== user.username) {
+        // The assertion was valid but belongs to somebody else's key.
+        throw badRequest('That passkey belongs to another account', 'passkey_mismatch');
+      }
+    }
+
     await passkeys.setSsoDisabled(user.username, disabled);
-    res.status(204).end();
+    res.json({
+      ssoDisabled: disabled,
+      rescueCommand: passkeys.rescueCommand(user.username),
+    });
   }),
 );
 
