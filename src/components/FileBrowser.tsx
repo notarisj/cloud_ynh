@@ -131,6 +131,91 @@ export function FileBrowser({
     onContextMenu(entry, event);
   };
 
+  const surface = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+
+  /**
+   * Rubber-band selection, the way a desktop does it: press on empty space,
+   * drag, and everything the rectangle touches is selected.
+   *
+   * The threshold matters. Without it every click on the background starts a
+   * one-pixel drag, and a plain click — which is how you *clear* a selection —
+   * would be swallowed by it. Four pixels is below what a hand does by
+   * accident and above what a mouse does on its own.
+   */
+  const startMarquee = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      // A finger dragging across the background is scrolling, not selecting.
+      if (event.pointerType !== 'mouse') return;
+
+      // A press that starts on a row, a tile or any control belongs to that
+      // thing, not to the background.
+      const target = event.target as HTMLElement;
+      if (target.closest('.row, .tile, button, a, input, .list__header')) return;
+
+      const host = surface.current;
+      if (!host) return;
+
+      const originX = event.clientX;
+      const originY = event.clientY;
+      const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+      const before = new Set(selection);
+      let dragging = false;
+
+      const move = (pointer: PointerEvent) => {
+        const dx = pointer.clientX - originX;
+        const dy = pointer.clientY - originY;
+        if (!dragging && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+        dragging = true;
+
+        const rect = {
+          left: Math.min(originX, pointer.clientX),
+          top: Math.min(originY, pointer.clientY),
+          right: Math.max(originX, pointer.clientX),
+          bottom: Math.max(originY, pointer.clientY),
+        };
+
+        // Drawn relative to the surface, compared in viewport coordinates —
+        // which keeps it honest when the list is scrolled mid-drag.
+        const hostBox = host.getBoundingClientRect();
+        setBox({
+          left: rect.left - hostBox.left,
+          top: rect.top - hostBox.top,
+          width: rect.right - rect.left,
+          height: rect.bottom - rect.top,
+        });
+
+        const next = additive ? new Set(before) : new Set<string>();
+        for (const element of host.querySelectorAll<HTMLElement>('[data-path]')) {
+          const item = element.getBoundingClientRect();
+          const touches =
+            item.left < rect.right &&
+            item.right > rect.left &&
+            item.top < rect.bottom &&
+            item.bottom > rect.top;
+          if (touches) next.add(element.dataset.path!);
+        }
+        onSelectionChange(next);
+      };
+
+      const finish = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', finish);
+        window.removeEventListener('pointercancel', finish);
+        // A press that never became a drag is a click on the background, and
+        // that means "deselect everything".
+        if (!dragging && !additive) onSelectionChange(new Set());
+        setBox(null);
+      };
+
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', finish);
+      window.addEventListener('pointercancel', finish);
+    },
+    [selection, onSelectionChange],
+  );
+
   const badges = useMemo(
     () => (entry: FileEntry) => (
       <>
@@ -149,12 +234,13 @@ export function FileBrowser({
     [showOwner],
   );
 
-  if (view === 'grid') {
-    return (
+  const body =
+    view === 'grid' ? (
       <div className={`grid${coarse || selection.size > 0 ? ' grid--picking' : ''}`} role="listbox" aria-multiselectable="true">
         {entries.map((entry) => (
           <div
             key={entry.path}
+            data-path={entry.path}
             role="option"
             tabIndex={0}
             className="tile"
@@ -189,11 +275,8 @@ export function FileBrowser({
           </div>
         ))}
       </div>
-    );
-  }
-
-  return (
-    <div className={`list${coarse || selection.size > 0 ? ' list--picking' : ''}`} role="listbox" aria-multiselectable="true">
+    ) : (
+      <div className={`list${coarse || selection.size > 0 ? ' list--picking' : ''}`} role="listbox" aria-multiselectable="true">
       <div className="list__header" role="presentation">
         <span className="list__check">
           <Checkbox
@@ -213,6 +296,7 @@ export function FileBrowser({
       {entries.map((entry) => (
         <div
           key={entry.path}
+          data-path={entry.path}
           role="option"
           tabIndex={0}
           className="row"
@@ -265,6 +349,18 @@ export function FileBrowser({
           </button>
         </div>
       ))}
+      </div>
+    );
+
+  return (
+    <div ref={surface} className="browser" onPointerDown={startMarquee}>
+      {body}
+      {box && (
+        <div
+          className="marquee"
+          style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
+        />
+      )}
     </div>
   );
 }

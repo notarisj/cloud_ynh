@@ -359,6 +359,28 @@
   overflow-x: hidden;
   position: relative;
   padding: 14px 16px 96px;
+  /* A column so the file surface below can claim the leftover height: a
+     rubber-band drag has to work in the empty space under the last file, which
+     means that empty space has to belong to something. */
+  display: flex;
+  flex-direction: column;
+}
+
+.browser {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  /* The drag is a selection gesture, not a text one. */
+  user-select: none;
+}
+
+.marquee {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--accent-tint);
 }
 
 .content__heading {
@@ -875,7 +897,7 @@
   font-weight: 600;
 }
 
-.tray__head span { flex: 1; }
+.tray__head span { flex: 1; min-width: 0; }
 
 .tray__body {
   max-height: 264px;
@@ -912,6 +934,9 @@
   font-weight: 400;
   color: var(--text-tertiary);
   font-size: 11.5px;
+  /* "144 MB / 179 MB" is one value, and breaking it across two lines makes it
+     read as two. The heading beside it is what gives way instead. */
+  white-space: nowrap;
 }
 
 /* Sits under the heading rather than beside it: on a narrow tray the two

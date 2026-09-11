@@ -70,12 +70,15 @@ export function UploadTray({ onFinished }: { onFinished: (parent: string) => voi
       <header className="tray__head">
         <span>
           {heading}
-          {remaining && <span className="tray__eta">{remaining}</span>}
+          {(speed > 0 || remaining) && (
+            <span className="tray__eta">
+              {[speed > 0 ? formatRate(speed) : '', remaining].filter(Boolean).join(' · ')}
+            </span>
+          )}
         </span>
         {active.length > 0 && (
           <span className="tray__totals">
             {formatBytes(sent)} / {formatBytes(size)}
-            {speed > 0 && ` · ${formatRate(speed)}`}
           </span>
         )}
         <button
