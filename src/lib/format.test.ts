@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { breadcrumbs, formatBytes, initials, needsRendition, splitExtension } from './format';
+import { breadcrumbs, formatBytes, initials, kindLabel, locationLabel, needsRendition, splitExtension } from './format';
 
 describe('formatting', () => {
   it('formats sizes the way the Finder does', () => {
@@ -28,6 +28,14 @@ describe('formatting', () => {
     expect(needsRendition('IMG_0001.HEIC')).toBe(true);
     expect(needsRendition('scan.tif')).toBe(true);
     expect(needsRendition('photo.jpg')).toBe(false);
+  });
+
+  it('describes kinds and locations for Get Info', () => {
+    expect(kindLabel({ isDir: false, name: 'a.jpg', preview: 'image' })).toBe('JPG image');
+    expect(kindLabel({ isDir: false, name: 'a.pdf', preview: 'pdf' })).toBe('PDF document');
+    expect(kindLabel({ isDir: true, name: 'Trip', preview: null })).toBe('Folder');
+    expect(kindLabel({ isDir: false, name: 'README', preview: null })).toBe('Document');
+    expect(locationLabel('/me/Photos/Trip/a.jpg', { me: 'My Files' })).toBe('My Files › Photos › Trip');
   });
 
   it('makes the same initials as the iOS app', () => {

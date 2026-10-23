@@ -19,6 +19,24 @@ interface FileBrowserProps {
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (entry: FileEntry | null, event: MouseEvent) => void;
   onSortChange: (key: SortKey) => void;
+  /** Whether an entry may be dragged to another folder. */
+  canDrag?: (entry: FileEntry) => boolean;
+  /** Items were dropped onto a folder. */
+  onDropInto?: (paths: string[], folder: string) => void;
+}
+
+/** The drag payload for moving items between folders, as opposed to uploading files. */
+export const DRAG_TYPE = 'application/x-cloud-paths';
+
+/** The paths an internal drag carries, or null for any other drag. */
+export function draggedPaths(event: { dataTransfer: DataTransfer }): string[] | null {
+  if (!event.dataTransfer.types.includes(DRAG_TYPE)) return null;
+  try {
+    const parsed: unknown = JSON.parse(event.dataTransfer.getData(DRAG_TYPE) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -48,8 +66,44 @@ function useCoarsePointer(): boolean {
 
 export function FileBrowser({
   entries, ticket, view, sort, descending, selection, showOwner,
-  onSelectionChange, onOpen, onContextMenu, onSortChange,
+  onSelectionChange, onOpen, onContextMenu, onSortChange, canDrag, onDropInto,
 }: FileBrowserProps) {
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+
+  /**
+   * Dragging an item moves the selection when the item is part of it, the
+   * way Finder does, and just the item otherwise.
+   */
+  const dragProps = (entry: FileEntry) => {
+    const draggable = canDrag?.(entry) ?? false;
+    const props: React.HTMLAttributes<HTMLDivElement> & { draggable?: boolean } = { draggable };
+    if (draggable) {
+      props.onDragStart = (event) => {
+        const paths = selection.has(entry.path) ? [...selection] : [entry.path];
+        event.dataTransfer.setData(DRAG_TYPE, JSON.stringify(paths));
+        event.dataTransfer.effectAllowed = 'move';
+      };
+    }
+    if (entry.isDir && onDropInto) {
+      props.onDragOver = (event) => {
+        if (!event.dataTransfer.types.includes(DRAG_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        setDropTarget(entry.path);
+      };
+      props.onDragLeave = () => setDropTarget((current) => (current === entry.path ? null : current));
+      props.onDrop = (event) => {
+        const paths = draggedPaths(event);
+        if (!paths) return;
+        event.preventDefault();
+        // The window behind treats a drop as an upload; this one is a move.
+        event.stopPropagation();
+        setDropTarget(null);
+        if (!paths.includes(entry.path)) onDropInto(paths, entry.path);
+      };
+    }
+    return props;
+  };
   // Anchor for shift-click ranges, the way every file manager behaves.
   const anchor = useRef<string | null>(null);
   const coarse = useCoarsePointer();
@@ -157,8 +211,9 @@ export function FileBrowser({
             key={entry.path}
             role="option"
             tabIndex={0}
-            className="tile"
+            className={`tile${dropTarget === entry.path ? ' is-drop-target' : ''}`}
             aria-selected={selection.has(entry.path)}
+            {...dragProps(entry)}
             onClick={(event) => activate(entry, event)}
             onDoubleClick={() => !coarse && onOpen(entry)}
             onKeyDown={(event) => {
@@ -215,8 +270,9 @@ export function FileBrowser({
           key={entry.path}
           role="option"
           tabIndex={0}
-          className="row"
+          className={`row${dropTarget === entry.path ? ' is-drop-target' : ''}`}
           aria-selected={selection.has(entry.path)}
+          {...dragProps(entry)}
           onClick={(event) => activate(entry, event)}
           onDoubleClick={() => !coarse && onOpen(entry)}
           onKeyDown={(event) => {
@@ -273,7 +329,7 @@ export function FileBrowser({
  * The selection checkbox. A real button rather than an <input> so that it can
  * live inside a row without the click reaching the row underneath.
  */
-function Checkbox({
+export function Checkbox({
   checked, label, onToggle,
 }: {
   checked: boolean;

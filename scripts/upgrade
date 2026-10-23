@@ -32,6 +32,9 @@ fi
 [ -z "$enable_shared" ]     && enable_shared="true"
 [ -z "$enable_thumbnails" ] && enable_thumbnails="true"
 [ -z "$enable_passkeys" ]   && enable_passkeys="true"
+[ -z "$enable_public_links" ] && enable_public_links="true"
+[ "$enable_public_links" = "1" ] && enable_public_links="true"
+[ "$enable_public_links" = "0" ] && enable_public_links="false"
 [ "$enable_shared"     = "1" ] && enable_shared="true"
 [ "$enable_thumbnails" = "1" ] && enable_thumbnails="true"
 [ "$enable_passkeys"   = "1" ] && enable_passkeys="true"
@@ -40,6 +43,7 @@ fi
 [ "$enable_passkeys"   = "0" ] && enable_passkeys="false"
 
 ynh_app_setting_set --key=enable_passkeys --value="$enable_passkeys"
+ynh_app_setting_set --key=enable_public_links --value="$enable_public_links"
 
 [ -z "$user_quota" ] && user_quota=0
 [ -z "$max_upload" ] && max_upload=20

@@ -12,6 +12,8 @@ import { ssoRouter } from './routes/sso';
 import { syncRouter } from './routes/sync';
 import { trashRouter } from './routes/trash';
 import { uploadRouter } from './routes/upload';
+import { linksRouter } from './routes/links';
+import { publicRouter } from './routes/public';
 
 /**
  * The HTTP application, without a listening socket or background timers —
@@ -88,6 +90,12 @@ export function createApp(): Express {
   app.use('/api/v1/trash', requireProxySecret, json, trashRouter);
   app.use('/api/v1/sync', requireProxySecret, syncRouter);
   app.use('/api/v1/media', requireProxySecret, mediaRouter);
+  app.use('/api/v1/links', requireProxySecret, json, linksRouter);
+
+  // Public links. Reachable without any session, through their own
+  // visitors permission in nginx; everything they serve is confined to the
+  // linked item.
+  app.use('/s', requireProxySecret, publicRouter);
 
   // Upload: JSON on the control endpoints, untouched streams on the chunk PUT
   // and the multipart POST.
@@ -131,7 +139,7 @@ export function createApp(): Express {
     // asset must 404 rather than resolve to HTML — a stale index.html asking for
     // a build that no longer exists is much easier to diagnose as "404 on
     // index-abc123.js" than as "unexpected token '<'".
-    app.get(/^(?!\/api\/|\/assets\/).*/, (_req, res) => {
+    app.get(/^(?!\/api\/|\/assets\/|\/s\/).*/, (_req, res) => {
       res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(spaDir, 'index.html'));
     });

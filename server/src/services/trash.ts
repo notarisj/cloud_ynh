@@ -7,6 +7,7 @@ import { assertWritable, joinVPath, ownerRelOf, parentVPath, resolveVPath } from
 import { invalidateUsage, uniqueName, type FileEntry } from './storage';
 import * as storage from './storage';
 import * as shares from './shares';
+import * as links from './links';
 
 export interface TrashItem {
   id: string;
@@ -120,6 +121,7 @@ export async function moveToTrash(username: string, vpath: string): Promise<Tras
 
   // Whatever was published from inside the deleted item is gone with it.
   await shares.forgetUnder(resolved.owner, ownerRelOf(resolved));
+  await links.forgetUnder(resolved.owner, ownerRelOf(resolved));
 
   invalidateUsage(resolved.owner);
   return item;

@@ -1,10 +1,9 @@
 import fs from 'fs';
-import path from 'path';
-import archiver from 'archiver';
 import { Router, type RequestHandler } from 'express';
+import { archiveNameFor, streamArchive, streamFile } from '../lib/streaming';
 import { wrap } from '../lib/async';
 import { badRequest, unauthorized } from '../lib/errors';
-import { contentDisposition, mimeFor, previewKind } from '../lib/mime';
+import { previewKind } from '../lib/mime';
 import { ensureRoot, principal } from '../middleware/auth';
 import * as storage from '../services/storage';
 import * as thumbs from '../services/thumbs';
@@ -105,78 +104,6 @@ function pathParam(req: Parameters<RequestHandler>[0]): string {
 // Download and inline preview
 //=================================================
 
-/**
- * Streams a file with Range support, which is what makes video scrubbing and
- * resumed downloads work — including URLSession's own resume logic on iOS.
- */
-function streamFile(
-  req: Parameters<RequestHandler>[0],
-  res: Parameters<RequestHandler>[1],
-  absPath: string,
-  name: string,
-  size: number,
-  etag: string,
-  inline: boolean,
-): void {
-  const mime = inline ? mimeFor(name) : 'application/octet-stream';
-
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Type', mime);
-  res.setHeader('Content-Disposition', contentDisposition(name, inline));
-  res.setHeader('ETag', `"${etag}"`);
-  res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
-  // Files are user content; never let a browser sniff one into a script.
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-
-  if (req.headers['if-none-match'] === `"${etag}"`) {
-    res.status(304).end();
-    return;
-  }
-
-  const range = req.headers.range;
-  if (typeof range === 'string' && range.startsWith('bytes=')) {
-    const [startRaw, endRaw] = range.slice(6).split('-');
-    let start = Number.parseInt(startRaw ?? '', 10);
-    let end = Number.parseInt(endRaw ?? '', 10);
-
-    // "bytes=-500" means the last 500 bytes.
-    if (Number.isNaN(start) && !Number.isNaN(end)) {
-      start = Math.max(0, size - end);
-      end = size - 1;
-    }
-    if (Number.isNaN(end)) end = size - 1;
-
-    if (Number.isNaN(start) || start >= size || start > end) {
-      res.status(416).setHeader('Content-Range', `bytes */${size}`);
-      res.end();
-      return;
-    }
-
-    end = Math.min(end, size - 1);
-    res.status(206);
-    res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-    res.setHeader('Content-Length', String(end - start + 1));
-
-    const stream = fs.createReadStream(absPath, { start, end });
-    stream.on('error', () => res.destroy());
-    // Stop reading if the client hangs up mid-scrub.
-    res.on('close', () => stream.destroy());
-    stream.pipe(res);
-    return;
-  }
-
-  res.setHeader('Content-Length', String(size));
-  if (req.method === 'HEAD') {
-    res.end();
-    return;
-  }
-
-  const stream = fs.createReadStream(absPath);
-  stream.on('error', () => res.destroy());
-  res.on('close', () => stream.destroy());
-  stream.pipe(res);
-}
-
 mediaRouter.get(
   '/download',
   authOrTicket,
@@ -249,47 +176,11 @@ mediaRouter.get(
 
     const only = items.length === 1 ? items[0] : undefined;
     const requestedName = typeof req.query.name === 'string' ? req.query.name : '';
-    // A file's extension gives way to ".zip"; a folder's name is kept whole.
-    const base = only
-      ? only.entry.isDir ? only.entry.name : only.entry.name.replace(/\.[^.]+$/, '')
-      : requestedName || 'Download';
-    const archiveName = `${base.replace(/[/\\\0]/g, '_').slice(0, 120) || 'Download'}.zip`;
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', contentDisposition(archiveName, false));
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-
-    const archive = archiver('zip', { store: true });
-    archive.on('warning', (err) => console.warn('[cloud] archive warning:', err.message));
-    archive.on('error', () => res.destroy());
-    // A download cancelled half-way stops the walk instead of finishing it
-    // for nobody.
-    res.on('close', () => {
-      if (!res.writableFinished) archive.abort();
-    });
-    archive.pipe(res);
-
-    const used = new Set<string>();
-    for (const { entry, abs } of items) {
-      // Two selected items can share a name when they come from different
-      // folders; the second becomes "name 2", as anywhere else.
-      let top = entry.name;
-      for (let n = 2; used.has(top); n += 1) top = `${path.parse(entry.name).name} ${n}${path.parse(entry.name).ext}`;
-      used.add(top);
-
-      if (!entry.isDir) {
-        archive.file(abs, { name: top, date: new Date(entry.mtime) });
-        continue;
-      }
-      archive.append('', { name: `${top}/` });
-      for await (const item of storage.filesBeneath(abs, top)) {
-        if (item.isDir) archive.append('', { name: `${item.name}/` });
-        else archive.file(item.abs, { name: item.name });
-      }
-    }
-
-    await archive.finalize();
+    await streamArchive(
+      res,
+      items.map(({ entry, abs }) => ({ name: entry.name, abs, isDir: entry.isDir, mtime: entry.mtime })),
+      only ? archiveNameFor(only.entry.name, only.entry.isDir) : archiveNameFor(requestedName || 'Download', true),
+    );
   }),
 );
 

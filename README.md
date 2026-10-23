@@ -18,6 +18,12 @@ Packaged for YunoHost 12, following the same conventions as `wg-man_ynh`.
 - **A web interface** — list and icon views, thumbnails for images, videos and
   PDFs, drag-and-drop upload, multi-select with move/copy/share/delete,
   full-screen previews, search, and Recently Deleted.
+- **Public links** at `/s/<token>`. Publish a file or folder to anyone with the
+  URL — no account needed — with an optional expiry. The page lists, previews
+  and downloads (a folder as one ZIP), and the link follows its item through
+  renames and moves, and stops working the moment it is removed.
+- **Folder downloads** as a ZIP, streamed as it is built, and **Get Info** with
+  a folder's real size and item count.
 - **Resumable uploads.** Large files are sent in 8 MB chunks straight to their
   final offset on disk, so an interrupted upload resumes instead of restarting.
 - **Passkeys.** Sign in with the fingerprint, face or PIN on your own device.
@@ -41,10 +47,11 @@ You are asked for:
 | Per-user quota (GB) | `0` | 0 means unlimited |
 | Largest single upload (GB) | `20` | Rejected before any bytes transfer |
 | Sharing | yes | Lets users publish their own items to everyone with access |
+| Public links | yes | Lets users publish an item to anyone with its URL |
 | Passkeys | yes | Lets users sign in without a password |
 | Thumbnails | yes | Needs `ffmpeg`, `poppler-utils` and `libheif-examples` (for iPhone HEIC photos), installed automatically |
 
-All five can be changed later without reinstalling, from the app's Config panel
+All of these can be changed later without reinstalling, from the app's Config panel
 or with `yunohost app config set cloud`.
 
 ## Where things live
@@ -58,6 +65,7 @@ or with `yunohost app config set cloud`.
     ├── trash/<username>/    deleted items, kept 30 days
     ├── thumbs/              generated thumbnails, capped at 512 MB
     ├── uploads/             chunks of uploads still in flight
+    ├── links.json           public links: which items anyone with the URL may get
     ├── tokens/              hashed refresh tokens, one file per account
     └── passkeys/            registered passkeys — public keys only
 ```
@@ -137,6 +145,7 @@ Everything is under `<domain><path>/api/v1`. Send `Authorization: Bearer <token>
 | `GET` | `/files/?path=&sort=&desc=` | List a folder, with a read ticket |
 | `GET` | `/files/stat?path=` | One entry |
 | `GET` | `/files/search?q=&path=` | Recursive filename search |
+| `GET` | `/files/info?path=` | Get Info: the entry, plus a folder's size and item count |
 | `POST` | `/files/folder` | `{path}` |
 | `POST` | `/files/rename` | `{path, name, conflict}` |
 | `POST` | `/files/move` | `{from, to, conflict}` |
@@ -157,7 +166,8 @@ offer before the user tries it.
 |---|---|---|
 | `GET` | `/media/download?path=` | Full file, supports `Range` |
 | `GET` | `/media/preview?path=` | Inline, sandboxed, images/video/audio/PDF only |
-| `GET` | `/media/thumb?path=&size=` | JPEG thumbnail (128/256/512/1024) |
+| `GET` | `/media/thumb?path=&size=` | JPEG thumbnail (128/256/512/1024/2048) |
+| `GET` | `/media/archive?path=&path=&name=` | Folders or several items as one ZIP |
 
 These three also accept `&t=<ticket>` instead of a bearer token, for `<img>`
 tags and anything else that fetches a URL without letting you set a header. A
@@ -173,6 +183,18 @@ ticket is read-only, scoped to one subtree, and lasts fifteen minutes.
 | `PUT` | `/upload/:id/chunk/:index` | Raw bytes of one chunk |
 | `POST` | `/upload/:id/complete` | Finalise |
 | `DELETE` | `/upload/:id` | Abandon |
+
+### Public links
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/links/?path=` | Your links, or the link for one item |
+| `POST` | `/links/` | `{path, expiresInDays}` → create, or change the expiry (null: never) |
+| `DELETE` | `/links/:id` | Stop the link working |
+
+A link opens at `<domain><path>/s/<token>`, outside `/api/v1` and with no
+session: a page that lists, previews and downloads the item. Everything it
+serves is confined to that item — `..`, symlinks and hidden files are refused.
 
 ### Trash and sync
 

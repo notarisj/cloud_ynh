@@ -71,6 +71,8 @@ export const config = {
     tokensDir: path.join(DATA_DIR, '.meta', 'tokens'),
     /** The share registry: which items are published under "/shared". */
     sharesFile: path.join(DATA_DIR, '.meta', 'shares.json'),
+    /** Public links: which items anyone with the URL may download. */
+    linksFile: path.join(DATA_DIR, '.meta', 'links.json'),
     /** One file per account holding that account's registered passkeys. */
     passkeysDir: path.join(DATA_DIR, '.meta', 'passkeys'),
     /**
@@ -85,6 +87,10 @@ export const config = {
     sharingEnabled: bool('ENABLE_SHARING', bool('ENABLE_SHARED', true)),
     userQuotaBytes: int('USER_QUOTA_BYTES', 0),
     maxUploadBytes: int('MAX_UPLOAD_BYTES', 20 * 1024 ** 3),
+  },
+
+  publicLinks: {
+    enabled: bool('ENABLE_PUBLIC_LINKS', true),
   },
 
   previews: {

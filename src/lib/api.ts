@@ -67,7 +67,7 @@ export interface Session {
   user: { username: string; displayName: string; email?: string; isAdmin: boolean };
   roots: RootInfo[];
   usage: Usage;
-  limits: { maxUploadBytes: number; chunkSize: number; passkeys?: boolean };
+  limits: { maxUploadBytes: number; chunkSize: number; passkeys?: boolean; publicLinks?: boolean };
   /** How this session was obtained, which decides how signing out works. */
   via: 'portal' | 'passkey';
 }
@@ -91,6 +91,28 @@ export interface ShareSummary {
   sharedAt: number;
   /** Absent from servers before API version 2. */
   isDir?: boolean;
+}
+
+/** A public link: one of your items, published to anyone with the URL. */
+export interface LinkSummary {
+  id: string;
+  url: string;
+  /** Where the item lives, e.g. "/me/Photos/Trip". */
+  path: string;
+  name: string;
+  isDir: boolean;
+  createdAt: number;
+  /** Null for a link that does not expire. */
+  expiresAt: number | null;
+}
+
+/** Get Info: what a folder holds, or a file's own size. */
+export interface Contents {
+  size: number;
+  files: number;
+  folders: number;
+  /** False when the server stopped counting early and the figures are a floor. */
+  complete: boolean;
 }
 
 /** What the server says about itself before anybody signs in. */
@@ -403,6 +425,32 @@ export async function serverConfig(): Promise<ServerConfig | null> {
   }
 }
 
+export function info(path: string): Promise<{ entry: FileEntry; contents: Contents }> {
+  return request(`/files/info?path=${encodeURIComponent(path)}`);
+}
+
+export function duplicate(path: string): Promise<FileEntry> {
+  return copy(path, path, 'rename');
+}
+
+//=================================================
+// Public links
+//=================================================
+
+/** Your public links — or, given a path, the link for that item if it has one. */
+export function listLinks(path?: string): Promise<{ links: LinkSummary[]; enabled: boolean }> {
+  return request(path ? `/links/?path=${encodeURIComponent(path)}` : '/links/');
+}
+
+/** Create the link for an item, or change how long it lasts. */
+export function saveLink(path: string, expiresInDays: number | null): Promise<LinkSummary> {
+  return request<{ link: LinkSummary }>('/links/', jsonBody({ path, expiresInDays })).then((r) => r.link);
+}
+
+export function removeLink(id: string): Promise<unknown> {
+  return request(`/links/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export function usage(): Promise<Usage> {
   return request<{ usage: Usage }>('/auth/me').then((r) => r.usage);
 }
@@ -467,6 +515,15 @@ export function previewUrl(ticket: string, path: string): string {
 
 export function downloadUrl(ticket: string, path: string): string {
   return `${API}/media/download?path=${encodeURIComponent(path)}&t=${encodeURIComponent(ticket)}`;
+}
+
+/** Folders, and selections of several items, download as one ZIP. */
+export function archiveUrl(ticket: string, paths: string[], name?: string): string {
+  const params = new URLSearchParams();
+  for (const path of paths) params.append('path', path);
+  if (name) params.set('name', name);
+  params.set('t', ticket);
+  return `${API}/media/archive?${params}`;
 }
 
 /** Fetch a text file's contents for the inline text preview. */

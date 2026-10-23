@@ -1,4 +1,5 @@
 import { Avatar } from './Avatar';
+import { DRAG_TYPE, draggedPaths } from './FileBrowser';
 import { Icon } from './Icon';
 import { formatBytes } from '../lib/format';
 import type { RootInfo, Usage } from '../lib/api';
@@ -14,6 +15,8 @@ interface SidebarProps {
   onNavigate: (path: string) => void;
   onShowTrash: () => void;
   onShowRecents: () => void;
+  /** Items dragged from a folder were dropped onto a location. */
+  onDropInto?: (paths: string[], folder: string) => void;
   onShowSettings: () => void;
   onClose: () => void;
 }
@@ -22,6 +25,7 @@ const ROOT_ICONS: Record<string, 'home' | 'shared'> = { me: 'home', shared: 'sha
 
 export function Sidebar({
   roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onShowRecents, onShowSettings, onClose,
+  onDropInto,
 }: SidebarProps) {
   // An unlimited quota has no meaningful bar, so the meter falls back to the
   // volume's free space — still useful, and honest about what it is showing.
@@ -65,6 +69,17 @@ export function Sidebar({
           className="sidebar__item"
           aria-current={view === 'browse' && currentRoot === root.id}
           onClick={() => onNavigate(root.path)}
+          // My Files takes drops, so a dragged item can be moved to the top.
+          onDragOver={(event) => {
+            if (root.writable && onDropInto && event.dataTransfer.types.includes(DRAG_TYPE)) event.preventDefault();
+          }}
+          onDrop={(event) => {
+            const paths = draggedPaths(event);
+            if (!paths || !root.writable || !onDropInto) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onDropInto(paths, root.path);
+          }}
           title={
             root.id === 'shared'
               ? 'Items people have published. Everything you own stays in My Files.'

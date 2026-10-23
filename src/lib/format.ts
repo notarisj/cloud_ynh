@@ -58,6 +58,25 @@ export function formatRelativeDays(days: number): string {
   return RELATIVE.format(Math.round(days), 'day');
 }
 
+/** "JPEG image", "Folder" — the Kind line in Get Info, as the iOS app words it. */
+export function kindLabel(entry: { isDir: boolean; name: string; preview: string | null }): string {
+  if (entry.isDir) return 'Folder';
+  const extension = entry.name.includes('.') ? entry.name.split('.').pop()!.toUpperCase() : '';
+  const family: Record<string, string> = {
+    image: 'image', video: 'video', audio: 'audio', pdf: 'document', text: 'text document',
+  };
+  if (entry.preview === 'pdf') return 'PDF document';
+  const noun = family[entry.preview ?? ''] ?? 'document';
+  return extension ? `${extension} ${noun}` : noun[0]!.toUpperCase() + noun.slice(1);
+}
+
+/** "/me/Photos/Trip/a.jpg" → "My Files › Photos › Trip": where an item lives. */
+export function locationLabel(vpath: string, rootLabels: Record<string, string>): string {
+  const segments = vpath.split('/').filter(Boolean).slice(0, -1);
+  if (segments.length === 0) return '—';
+  return segments.map((segment, index) => (index === 0 ? (rootLabels[segment] ?? segment) : segment)).join(' › ');
+}
+
 /**
  * Image formats a browser cannot be relied on to display, which the preview
  * shows through the server's JPEG rendition instead of the original bytes.

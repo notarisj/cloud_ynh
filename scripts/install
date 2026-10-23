@@ -21,6 +21,7 @@ ynh_app_setting_set --key=jwt_secret --value="$jwt_secret"
 [ "$enable_shared"     = "1" ] && enable_shared="true"     || enable_shared="false"
 [ "$enable_thumbnails" = "1" ] && enable_thumbnails="true" || enable_thumbnails="false"
 [ "$enable_passkeys"   = "1" ] && enable_passkeys="true"   || enable_passkeys="false"
+[ "$enable_public_links" = "1" ] && enable_public_links="true" || enable_public_links="false"
 
 # The panel's number fields can hand back "5.0"; shell arithmetic only takes integers.
 user_quota=${user_quota%%.*}
@@ -31,6 +32,7 @@ max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
 ynh_app_setting_set --key=enable_shared     --value="$enable_shared"
 ynh_app_setting_set --key=enable_thumbnails --value="$enable_thumbnails"
 ynh_app_setting_set --key=enable_passkeys   --value="$enable_passkeys"
+ynh_app_setting_set --key=enable_public_links --value="$enable_public_links"
 
 #=================================================
 # INSTALL NODE.JS

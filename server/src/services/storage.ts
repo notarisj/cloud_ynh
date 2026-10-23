@@ -18,6 +18,7 @@ import {
   type RootId,
 } from '../lib/vpath';
 import * as shares from './shares';
+import * as links from './links';
 
 export interface FileEntry {
   name: string;
@@ -434,6 +435,8 @@ export async function move(
   if (finalRel !== ownerRelOf(from)) {
     await shares.forgetUnder(to.owner, finalRel);
     await shares.relocate(from.owner, ownerRelOf(from), finalRel);
+    await links.forgetUnder(to.owner, finalRel);
+    await links.relocate(from.owner, ownerRelOf(from), finalRel);
   }
 
   invalidateUsage(username);
@@ -484,7 +487,11 @@ export async function copy(
   const destination = await prepareDestination(to.abs, policy);
   // Whatever the copy replaced was deleted, and anything published from it
   // goes the same way — exactly as a move over it would.
-  if (policy === 'replace') await shares.forgetUnder(to.owner, siblingRel(ownerRelOf(to), path.basename(destination)));
+  if (policy === 'replace') {
+    const replaced = siblingRel(ownerRelOf(to), path.basename(destination));
+    await shares.forgetUnder(to.owner, replaced);
+    await links.forgetUnder(to.owner, replaced);
+  }
 
   try {
     await fs.cp(from.abs, destination, { recursive: true, force: true, preserveTimestamps: true });
@@ -528,6 +535,7 @@ export async function hardDelete(username: string, vpath: string): Promise<void>
 
   // Nothing left to publish.
   await shares.forgetUnder(resolved.owner, ownerRelOf(resolved));
+  await links.forgetUnder(resolved.owner, ownerRelOf(resolved));
   invalidateUsage(resolved.owner);
 }
 

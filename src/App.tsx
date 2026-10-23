@@ -10,8 +10,10 @@ import { locationHash, readHash, type View } from './lib/routing';
 import { filesFromDrop, uploads } from './lib/uploads';
 import { ContextMenu, type MenuAction } from './components/ContextMenu';
 import { ConfirmDialog, PromptDialog } from './components/Dialogs';
-import { FileBrowser, type ViewMode } from './components/FileBrowser';
+import { DRAG_TYPE, FileBrowser, draggedPaths, type ViewMode } from './components/FileBrowser';
 import { FolderPicker } from './components/FolderPicker';
+import { InfoDialog } from './components/InfoDialog';
+import { LinkDialog } from './components/LinkDialog';
 import { Icon } from './components/Icon';
 import { PreviewOverlay } from './components/PreviewOverlay';
 import { SelectionBar } from './components/SelectionBar';
@@ -32,9 +34,11 @@ type Dialog =
   | { kind: 'newFolder' }
   | { kind: 'rename'; entry: FileEntry }
   | { kind: 'confirmDelete'; entries: FileEntry[] }
-  | { kind: 'confirmPurge'; item: TrashItem }
+  | { kind: 'confirmPurge'; items: TrashItem[] }
   | { kind: 'confirmEmptyTrash' }
   | { kind: 'pick'; operation: 'move' | 'copy'; entries: FileEntry[] }
+  | { kind: 'info'; entry: FileEntry }
+  | { kind: 'link'; entry: FileEntry }
   | null;
 
 /** Renew a read ticket this long before it lapses. */
@@ -251,6 +255,7 @@ export function App() {
   const writable = view === 'browse' && (listing?.writable ?? path.startsWith('/me'));
   // An admin can turn sharing off; then there is no Shared root to offer.
   const sharingEnabled = session?.roots.some((root) => root.id === 'shared') ?? false;
+  const linksEnabled = session?.limits.publicLinks === true;
 
   const open = useCallback(
     (entry: FileEntry) => {
@@ -293,6 +298,29 @@ export function App() {
     runAction(async () => {
       for (const target of targets) await api.remove(target.path);
       setSelection(new Set());
+    });
+
+  const doDuplicate = (targets: FileEntry[]) =>
+    runAction(async () => {
+      for (const target of targets) await api.duplicate(target.path);
+    });
+
+  /** Drag and drop onto a folder: move what was dragged into it. */
+  const moveInto = (paths: string[], destination: string) =>
+    runAction(async () => {
+      let moved = 0;
+      for (const source of paths) {
+        const name = source.split('/').pop() ?? '';
+        const parent = source.split('/').slice(0, -1).join('/');
+        // Dropping something where it already is, or a folder into itself.
+        if (parent === destination || destination === source || destination.startsWith(`${source}/`)) continue;
+        await api.move(source, `${destination}/${name}`, 'rename');
+        moved += 1;
+      }
+      setSelection(new Set());
+      if (moved > 0) {
+        setNotice(`${moved === 1 ? '1 item' : `${moved} items`} moved to ${destination === '/me' ? 'My Files' : destination.split('/').pop()}.`);
+      }
     });
 
   const doShare = (targets: FileEntry[]) =>
@@ -344,27 +372,23 @@ export function App() {
 
   const download = useCallback(
     (targets: FileEntry[]) => {
-      if (!ticket) return;
-      const files = targets.filter((entry) => !entry.isDir);
-      if (files.length === 0) {
-        setNotice('Folders cannot be downloaded yet — open one and download what is inside.');
-        return;
-      }
-      // Browsers throttle a burst of navigations, so the downloads are started
-      // as separate hidden links, spaced just enough to all be honoured.
-      files.forEach((entry, index) => {
-        window.setTimeout(() => {
-          const link = document.createElement('a');
-          link.href = api.downloadUrl(ticket, entry.path);
-          link.download = entry.name;
-          link.rel = 'noopener';
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-        }, index * 350);
-      });
+      if (!ticket || targets.length === 0) return;
+      // One file downloads as itself. A folder, or several items, comes down
+      // as a single ZIP — one save dialog rather than a burst of them, and
+      // the only way a folder can be downloaded at all.
+      const only = targets.length === 1 ? targets[0] : undefined;
+      const href = only && !only.isDir
+        ? api.downloadUrl(ticket, only.path)
+        : api.archiveUrl(ticket, targets.map((entry) => entry.path), listing?.entry.name);
+      const link = document.createElement('a');
+      link.href = href;
+      if (only && !only.isDir) link.download = only.name;
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
     },
-    [ticket],
+    [ticket, listing],
   );
 
   const startUpload = useCallback(
@@ -400,7 +424,7 @@ export function App() {
     event.preventDefault();
     dragDepth.current = 0;
     setDragging(false);
-    if (view === 'trash') return;
+    if (view === 'trash' || draggedPaths(event)) return;
     startUpload(await filesFromDrop(event.dataTransfer));
   };
 
@@ -434,6 +458,11 @@ export function App() {
       }
       if (meta && event.key.toLowerCase() === 'v') {
         doPaste();
+        return;
+      }
+      if (meta && event.key.toLowerCase() === 'i' && selected.length === 1 && selected[0]) {
+        event.preventDefault();
+        setDialog({ kind: 'info', entry: selected[0] });
         return;
       }
       if (event.key === 'Escape') {
@@ -485,13 +514,23 @@ export function App() {
     const mine = !entry.readOnly && !entry.sharedBy;
     const actions: MenuAction[] = [
       { id: 'open', label: entry.isDir ? 'Open' : 'Preview', icon: entry.isDir ? 'folder' : 'photo', disabled: many },
-      { id: 'download', label: 'Download', icon: 'download', disabled: entry.isDir },
+      { id: 'info', label: 'Get Info', icon: 'info', disabled: many },
+      {
+        id: 'download',
+        label: many || entry.isDir ? 'Download as ZIP' : 'Download',
+        icon: 'download',
+      },
     ];
 
     if (entry.shared && !entry.readOnly) {
       actions.push({ id: 'unshare', label: 'Stop Sharing', icon: 'shared', separatorBefore: true });
     } else if (mine && sharingEnabled) {
       actions.push({ id: 'share', label: 'Share with Everyone', icon: 'shared', separatorBefore: true });
+    }
+    // A public link reaches people with no account here, so it is only ever
+    // made from the item's own place in My Files.
+    if (linksEnabled && entry.path.startsWith('/me/') && !many) {
+      actions.push({ id: 'link', label: 'Public Link…', icon: 'link', separatorBefore: !(mine && sharingEnabled) && !entry.shared });
     }
 
     actions.push(
@@ -502,6 +541,7 @@ export function App() {
       actions.push(
         { id: 'moveTo', label: 'Move to…', icon: 'move' },
         { id: 'rename', label: 'Rename…', icon: 'pencil', disabled: many },
+        { id: 'duplicate', label: 'Duplicate', icon: 'copy' },
         { id: 'copy', label: many ? `Copy ${selected.length} Items` : 'Copy', icon: 'copy', separatorBefore: true },
         { id: 'cut', label: many ? `Cut ${selected.length} Items` : 'Cut', icon: 'move' },
         {
@@ -515,7 +555,7 @@ export function App() {
     }
 
     return actions;
-  }, [menu, selected, clipboard, writable, sharingEnabled]);
+  }, [menu, selected, clipboard, writable, sharingEnabled, linksEnabled]);
 
   const targets = () => (selected.length > 0 ? selected : menu?.entry ? [menu.entry] : []);
 
@@ -534,6 +574,9 @@ export function App() {
       case 'copyTo': setDialog({ kind: 'pick', operation: 'copy', entries: targets() }); break;
       case 'moveTo': setDialog({ kind: 'pick', operation: 'move', entries: targets() }); break;
       case 'rename': if (entry) setDialog({ kind: 'rename', entry }); break;
+      case 'info': if (entry) setDialog({ kind: 'info', entry }); break;
+      case 'link': if (entry) setDialog({ kind: 'link', entry }); break;
+      case 'duplicate': void doDuplicate(targets()); break;
       case 'copy': setClipboard({ paths: targets().map((e) => e.path), operation: 'copy' }); break;
       case 'cut': setClipboard({ paths: targets().map((e) => e.path), operation: 'cut' }); break;
       case 'delete': setDialog({ kind: 'confirmDelete', entries: targets() }); break;
@@ -594,6 +637,7 @@ export function App() {
           setSelection(new Set());
           setSidebarOpen(false);
         }}
+        onDropInto={(paths, folder) => void moveInto(paths, folder)}
         onShowRecents={() => {
           setView('recents');
           setQuery('');
@@ -637,7 +681,25 @@ export function App() {
               {crumbs.map((crumb, index) => (
                 <span key={crumb.path} className="crumbs__step">
                   {index > 0 && <Icon name="chevronRight" size={13} weight={2.2} className="crumbs__sep" />}
-                  <button type="button" className="crumbs__item" onClick={() => navigate(crumb.path)}>
+                  <button
+                    type="button"
+                    className="crumbs__item"
+                    onClick={() => navigate(crumb.path)}
+                    // A folder further up the path is a place to drop things,
+                    // the way the Finder's path bar is.
+                    onDragOver={(event) => {
+                      if (crumb.path !== path && writable && event.dataTransfer.types.includes(DRAG_TYPE)) {
+                        event.preventDefault();
+                      }
+                    }}
+                    onDrop={(event) => {
+                      const paths = draggedPaths(event);
+                      if (!paths) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void moveInto(paths, crumb.path);
+                    }}
+                  >
                     {crumb.label}
                   </button>
                 </span>
@@ -666,26 +728,29 @@ export function App() {
             />
           </label>
 
-          <div className="toolbar__group">
-            <button
-              type="button"
-              className="iconbutton"
-              aria-pressed={viewMode === 'list'}
-              onClick={() => setViewMode('list')}
-              aria-label="List view"
-            >
-              <Icon name="list" size={17} />
-            </button>
-            <button
-              type="button"
-              className="iconbutton"
-              aria-pressed={viewMode === 'grid'}
-              onClick={() => setViewMode('grid')}
-              aria-label="Grid view"
-            >
-              <Icon name="grid" size={17} />
-            </button>
-          </div>
+          {/* Recently Deleted is a list and nothing else. */}
+          {view !== 'trash' && (
+            <div className="toolbar__group">
+              <button
+                type="button"
+                className="iconbutton"
+                aria-pressed={viewMode === 'list'}
+                onClick={() => setViewMode('list')}
+                aria-label="List view"
+              >
+                <Icon name="list" size={17} />
+              </button>
+              <button
+                type="button"
+                className="iconbutton"
+                aria-pressed={viewMode === 'grid'}
+                onClick={() => setViewMode('grid')}
+                aria-label="Grid view"
+              >
+                <Icon name="grid" size={17} />
+              </button>
+            </div>
+          )}
 
           {view === 'browse' && writable && (
             <div className="toolbar__group" style={{ gap: 6, marginLeft: 4 }}>
@@ -755,8 +820,12 @@ export function App() {
             <TrashView
               items={trash?.items ?? []}
               retentionDays={trash?.retentionDays ?? 30}
-              onRestore={(item) => void runAction(() => api.restoreFromTrash(item.id))}
-              onPurge={(item) => setDialog({ kind: 'confirmPurge', item })}
+              onRestore={(items) =>
+                void runAction(async () => {
+                  for (const item of items) await api.restoreFromTrash(item.id);
+                })
+              }
+              onPurge={(items) => setDialog({ kind: 'confirmPurge', items })}
             />
           ) : entries.length === 0 ? (
             <EmptyState
@@ -780,6 +849,9 @@ export function App() {
                 event.preventDefault();
                 setMenu({ x: event.clientX, y: event.clientY, entry });
               }}
+              // Only your own items move, and only out of a folder you may change.
+              canDrag={(entry) => writable && !entry.readOnly && !entry.sharedBy}
+              onDropInto={(paths, folder) => void moveInto(paths, folder)}
               onSortChange={(key) => {
                 if (key === sort) setDescending((value) => !value);
                 else {
@@ -910,17 +982,29 @@ export function App() {
         />
       )}
 
+      {dialog?.kind === 'info' && (
+        <InfoDialog entry={dialog.entry} ticket={ticket} rootLabels={rootLabels} onClose={() => setDialog(null)} />
+      )}
+
+      {dialog?.kind === 'link' && <LinkDialog entry={dialog.entry} onClose={() => setDialog(null)} />}
+
       {dialog?.kind === 'confirmPurge' && (
         <ConfirmDialog
-          title={`Delete “${dialog.item.name}” permanently?`}
-          message="This item will be removed immediately. You cannot undo this."
+          title={
+            dialog.items.length === 1
+              ? `Delete “${dialog.items[0]?.name}” permanently?`
+              : `Delete ${dialog.items.length} items permanently?`
+          }
+          message="They will be removed immediately. You cannot undo this."
           confirmLabel="Delete"
           destructive
           onCancel={() => setDialog(null)}
           onConfirm={() => {
-            const item = dialog.item;
+            const doomed = dialog.items;
             setDialog(null);
-            void runAction(() => api.purgeFromTrash(item.id));
+            void runAction(async () => {
+              for (const item of doomed) await api.purgeFromTrash(item.id);
+            });
           }}
         />
       )}

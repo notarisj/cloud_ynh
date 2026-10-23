@@ -41,6 +41,13 @@ name.fr = "Configuration"
     yes = "true"
     no = "false"
 
+    [main.features.enable_public_links]
+    ask.en = "Allow public links"
+    help.en = "Lets users publish a file or folder to anyone with its link, no account needed. Links can expire and can be removed at any time. Turning this off stops every existing link from working, but deletes nothing — they work again if it is turned back on."
+    type = "boolean"
+    yes = "true"
+    no = "false"
+
     [main.features.enable_passkeys]
     ask.en = "Allow signing in with a passkey"
     help.en = "A passkey signs a user in with the fingerprint, face or PIN on their own device, with no password crossing the network. The YunoHost portal keeps working either way. Passkeys are bound to this app's domain: moving the app to another domain invalidates them."

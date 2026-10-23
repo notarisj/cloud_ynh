@@ -7,6 +7,7 @@ upgrades never touch them. Removing the app leaves them in place; only
 ```
 users/<username>/     every file, one root per account — including shared ones
 .meta/shares.json     which items are published under /shared, and by whom
+.meta/links.json      public links: which items anyone with the URL may download
 .meta/trash/          deleted items, kept 30 days, then swept automatically
 .meta/thumbs/         generated thumbnails, evicted least-recently-used at 512 MB
 .meta/uploads/        chunks of uploads in flight, swept after 24 hours
@@ -68,6 +69,22 @@ deliberate and must not be changed: it makes `/api/v1` reachable without a
 portal cookie so the iOS app and passkey sign-in can work, and every route
 behind it requires a valid token. Restricting it would break native clients
 without making anything safer.
+
+## Public links
+
+Users can publish a file or folder to anyone who has its link — someone with
+no account on the server. Links live at `/cloud/s/<token>` through the
+`cloud.links` permission, which is open to visitors for exactly that reason;
+like `cloud.api`, it must stay that way. Each link can expire, and its owner
+can remove it at any time from the item or from Settings.
+
+```bash
+yunohost app config set cloud main.features.enable_public_links -v false
+```
+
+Turning the feature off stops every link working at once without deleting
+any; they work again if it is turned back on. Removing an item, or its
+owner's account files, removes its links with it.
 
 ## Passkeys
 

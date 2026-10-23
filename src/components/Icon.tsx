@@ -12,7 +12,7 @@ export type IconName =
   | 'chevronRight' | 'chevronLeft' | 'chevronDown' | 'arrowUp'
   | 'grid' | 'list' | 'search' | 'upload' | 'download' | 'trash' | 'ellipsis'
   | 'pencil' | 'copy' | 'move' | 'close' | 'refresh' | 'cloud' | 'check'
-  | 'sort' | 'restore' | 'info' | 'shared' | 'home' | 'warning' | 'clock';
+  | 'sort' | 'restore' | 'info' | 'shared' | 'home' | 'warning' | 'clock' | 'link';
 
 const PATHS: Record<IconName, string> = {
   folder: 'M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2a2 2 0 0 1 1.6.8l.9 1.2h7.3A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z',
@@ -47,6 +47,7 @@ const PATHS: Record<IconName, string> = {
   info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 11v5M12 7.75h.01',
   shared: 'M15.5 9.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM8.5 15.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM8.5 15.5c-2.8 0-5 1.7-5 3.8v1.2h10v-1.2c0-2.1-2.2-3.8-5-3.8M15.5 9.5c2.8 0 5 1.7 5 3.8v.7h-3.6',
   home: 'M4 10.5 12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19zM9.5 20.5v-6h5v6',
+  link: 'M10 14a4 4 0 0 0 5.66 0l3.17-3.17a4 4 0 0 0-5.66-5.66l-1.1 1.1M14 10a4 4 0 0 0-5.66 0l-3.17 3.17a4 4 0 0 0 5.66 5.66l1.1-1.1',
   clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3.2 2',
   warning: 'M10.3 4.3 3 17a2 2 0 0 0 1.7 3h14.6a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0ZM12 9.5v4M12 16.75h.01',
 };

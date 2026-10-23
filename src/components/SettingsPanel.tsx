@@ -4,7 +4,7 @@ import { Avatar } from './Avatar';
 import { Icon } from './Icon';
 import { formatBytes, formatDate } from '../lib/format';
 import * as api from '../lib/api';
-import type { DeviceSession, PasskeySummary, Session, ShareSummary } from '../lib/api';
+import type { DeviceSession, LinkSummary, PasskeySummary, Session, ShareSummary } from '../lib/api';
 
 interface SettingsPanelProps {
   session: Session;
@@ -25,6 +25,7 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
   const [passkeys, setPasskeys] = useState<PasskeySummary[] | null>(null);
   const [ssoDisabled, setSsoDisabled] = useState(false);
   const [shares, setShares] = useState<ShareSummary[] | null>(null);
+  const [links, setLinks] = useState<LinkSummary[] | null>(null);
   const [sessions, setSessions] = useState<DeviceSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,22 +34,27 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
 
   const passkeysEnabled = session.limits.passkeys !== false;
   const sharingEnabled = session.roots.some((root) => root.id === 'shared');
+  const linksEnabled = session.limits.publicLinks === true;
 
   const refresh = useCallback(async () => {
     setError(null);
     const noKeys = { passkeys: [] as PasskeySummary[], ssoDisabled: false };
-    const [keys, devices, published] = await Promise.all([
+    const [keys, devices, published, linked] = await Promise.all([
       passkeysEnabled ? api.listPasskeys().catch(() => noKeys) : Promise.resolve(noKeys),
       api.listSessions().catch(() => ({ sessions: [] as DeviceSession[] })),
       sharingEnabled
         ? api.listShares().catch(() => ({ shares: [] as ShareSummary[], enabled: true }))
         : Promise.resolve({ shares: [] as ShareSummary[], enabled: false }),
+      linksEnabled
+        ? api.listLinks().catch(() => ({ links: [] as LinkSummary[], enabled: true }))
+        : Promise.resolve({ links: [] as LinkSummary[], enabled: false }),
     ]);
     setPasskeys(keys.passkeys);
     setSsoDisabled(keys.ssoDisabled === true);
     setShares(published.shares);
+    setLinks(linked.links);
     setSessions(devices.sessions);
-  }, [passkeysEnabled, sharingEnabled]);
+  }, [passkeysEnabled, sharingEnabled, linksEnabled]);
 
   useEffect(() => {
     void refresh();
@@ -237,6 +243,51 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
                       disabled={busy}
                     >
                       Stop sharing
+                    </button>
+                  </div>
+                ))
+              )}
+            </section>
+          )}
+
+          {linksEnabled && (
+            <section className="sheet__section">
+              <h3>Public links</h3>
+              <p className="sheet__lede">
+                Anyone with one of these links can download the item — no account needed. Removing a link
+                stops it working; the item itself is untouched.
+              </p>
+              {links === null ? (
+                <div className="spinner" />
+              ) : links.length === 0 ? (
+                <p className="sheet__empty">You have no public links.</p>
+              ) : (
+                links.map((link) => (
+                  <div key={link.id} className="sheet__row">
+                    <Icon name="link" size={18} style={{ color: 'var(--accent)' }} />
+                    <div className="sheet__rowtext">
+                      <strong>{link.name}</strong>
+                      <span>
+                        {displayPath(link.path)} ·{' '}
+                        {link.expiresAt ? `expires ${formatDate(link.expiresAt)}` : 'does not expire'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="iconbutton"
+                      title="Copy link"
+                      aria-label={`Copy link to ${link.name}`}
+                      onClick={() => void navigator.clipboard?.writeText(link.url)}
+                    >
+                      <Icon name="copy" size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={() => run(() => api.removeLink(link.id))}
+                      disabled={busy}
+                    >
+                      Remove
                     </button>
                   </div>
                 ))

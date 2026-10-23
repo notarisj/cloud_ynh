@@ -56,10 +56,8 @@ export function SelectionBar({
       <div className="selbar__actions">
         <Action
           icon="download"
-          label={files.length > 1 ? `Download ${files.length}` : 'Download'}
+          label={selected.length > 1 || files.length === 0 ? 'Download ZIP' : 'Download'}
           onClick={onDownload}
-          disabled={files.length === 0}
-          title={files.length === 0 ? 'Folders cannot be downloaded' : undefined}
         />
 
         {canShare && writable && sharingEnabled && <Action icon="shared" label="Share" onClick={onShare} />}

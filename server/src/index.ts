@@ -4,6 +4,7 @@ import * as trash from './services/trash';
 import * as uploads from './services/uploads';
 import * as thumbs from './services/thumbs';
 import * as shares from './services/shares';
+import * as links from './services/links';
 
 assertProductionConfig();
 ensureStorageLayout();
@@ -27,6 +28,10 @@ function schedule(label: string, task: () => Promise<void>, intervalMs: number):
 schedule('trash purge', trash.purgeExpired, 24 * 3600 * 1000);
 schedule('share registry sweep', async () => {
   await shares.prune();
+}, 24 * 3600 * 1000);
+schedule('link registry sweep', async () => {
+  const removed = await links.prune();
+  if (removed > 0) console.log(`[cloud] removed ${removed} expired or dangling link(s)`);
 }, 24 * 3600 * 1000);
 schedule('stale upload sweep', uploads.purgeStale, 3600 * 1000);
 schedule('thumbnail cache sweep', thumbs.sweepCache, 6 * 3600 * 1000);

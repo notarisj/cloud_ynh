@@ -68,6 +68,13 @@ ram.runtime = "256M"
   type = "boolean"
   default = true
 
+  [install.enable_public_links]
+  ask.en = "Allow public links?"
+  ask.fr = "Autoriser les liens publics ?"
+  help.en = "Lets users publish a file or folder to anyone who has its link, without an account. Every link can be given an expiry and removed at any time."
+  type = "boolean"
+  default = true
+
   [install.enable_thumbnails]
   ask.en = "Generate thumbnails and previews for images, videos and PDFs?"
   type = "boolean"
@@ -101,6 +108,15 @@ ram.runtime = "256M"
     # handshake, by the SPA itself. SSOwat must NOT gate this: native apps have
     # no portal cookie. Authentication is enforced in-process by the JWT
     # middleware, so "visitors" here means "reachable", not "public".
+    # Public links. Open to visitors, because a link is for someone without
+    # an account here; the API serves only what each link's token publishes.
+    [resources.permissions.links]
+    url = "/s"
+    allowed = "visitors"
+    auth_header = false
+    show_tile = false
+    protected = true
+
     [resources.permissions.api]
     url = "/api/v1"
     allowed = "visitors"

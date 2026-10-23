@@ -26,6 +26,8 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://localhost:3010', changeOrigin: true },
       '/healthz': { target: 'http://localhost:3010', changeOrigin: true },
+      // Public links, which the API serves as pages of their own.
+      '/s/': { target: 'http://localhost:3010', changeOrigin: true },
     },
   },
 });

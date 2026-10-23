@@ -29,6 +29,10 @@ ynh_app_config_apply() {
     enable_shared=$(ynh_app_setting_get --key=enable_shared)
     enable_thumbnails=$(ynh_app_setting_get --key=enable_thumbnails)
     enable_passkeys=$(ynh_app_setting_get --key=enable_passkeys)
+    enable_public_links=$(ynh_app_setting_get --key=enable_public_links)
+    [ -z "$enable_public_links" ] && enable_public_links="true"
+    [ "$enable_public_links" = "1" ] && enable_public_links="true"
+    [ "$enable_public_links" = "0" ] && enable_public_links="false"
     [ -z "$enable_shared" ]     && enable_shared="true"
     [ -z "$enable_thumbnails" ] && enable_thumbnails="true"
     [ -z "$enable_passkeys" ]   && enable_passkeys="true"

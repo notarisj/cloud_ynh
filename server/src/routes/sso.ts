@@ -79,6 +79,7 @@ ssoRouter.get(
         // Lets the web app hide the passkey controls entirely when the admin
         // has turned the feature off.
         passkeys: passkeys.enabled(),
+        publicLinks: config.publicLinks.enabled,
       },
     });
   }),

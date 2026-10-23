@@ -69,6 +69,7 @@ authRouter.get('/config', (_req, res) => {
     appPath: config.appPath,
     passkeys: passkeys.enabled(),
     sharing: config.storage.sharingEnabled,
+    publicLinks: config.publicLinks.enabled,
     limits: { maxUploadBytes: config.storage.maxUploadBytes, chunkSize: 8 * 1024 * 1024 },
   });
 });
@@ -178,6 +179,7 @@ authRouter.get(
         maxUploadBytes: config.storage.maxUploadBytes,
         chunkSize: 8 * 1024 * 1024,
         passkeys: passkeys.enabled(),
+        publicLinks: config.publicLinks.enabled,
       },
     });
   }),
@@ -295,6 +297,7 @@ async function sessionPayload(user: tokens.Principal, sid: string) {
       maxUploadBytes: config.storage.maxUploadBytes,
       chunkSize: 8 * 1024 * 1024,
       passkeys: passkeys.enabled(),
+      publicLinks: config.publicLinks.enabled,
     },
   };
 }

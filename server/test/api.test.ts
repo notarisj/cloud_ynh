@@ -179,3 +179,61 @@ test('get info measures a folder', async () => {
   assert.equal(body.entry.isDir, true);
   assert.deepEqual(body.contents, { size: 6, files: 2, folders: 1, complete: true });
 });
+
+test('public links publish one item and nothing else', async () => {
+  await upload('/me/Public/Trip/photo.jpg', Buffer.from('jpeg'));
+  await upload('/me/Public/Trip/.hidden', Buffer.from('secret'));
+  await upload('/me/Private/diary.txt', Buffer.from('private'));
+  fs.symlinkSync(path.join(dataDir, 'users/alice/Private'), path.join(dataDir, 'users/alice/Public/Trip/escape'));
+
+  const created = await call('POST', '/links', { path: '/me/Public/Trip', expiresInDays: 7 });
+  assert.equal(created.status, 201);
+  const { url, id } = created.body.link;
+  assert.ok(created.body.link.expiresAt > Date.now());
+  const token = url.split('/s/')[1];
+  const site = base.replace('/api/v1', '');
+
+  const page = await fetch(`${site}/s/${token}`);
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+  const html = await page.text();
+  assert.ok(html.includes('photo.jpg'));
+  assert.ok(!html.includes('.hidden'), 'hidden files are not listed');
+
+  const file = await fetch(`${site}/s/${token}/file?path=photo.jpg`);
+  assert.equal(await file.text(), 'jpeg');
+
+  for (const probe of ['../../Private/diary.txt', 'escape/diary.txt', '.hidden', '%2e%2e/x']) {
+    const response = await fetch(`${site}/s/${token}/file?path=${encodeURIComponent(probe)}`);
+    assert.ok(response.status === 404 || response.status === 400, `${probe} → ${response.status}`);
+  }
+
+  const zip = await fetch(`${site}/s/${token}/zip`);
+  assert.equal(zip.headers.get('content-type'), 'application/zip');
+  const zipped = Buffer.from(await zip.arrayBuffer()).toString('latin1');
+  assert.ok(zipped.includes('Trip/photo.jpg'));
+  assert.ok(!zipped.includes('diary'), 'the archive does not follow the symlink');
+
+  // The link follows its folder when the folder is renamed…
+  await call('POST', '/files/rename', { path: '/me/Public/Trip', name: 'Iceland' });
+  assert.equal((await fetch(`${site}/s/${token}/file?path=photo.jpg`)).status, 200);
+  assert.equal((await call('GET', '/links')).body.links[0].path, '/me/Public/Iceland');
+
+  // …and stops working when it is revoked.
+  assert.equal((await call('DELETE', `/links/${id}`)).status, 204);
+  const gone = await fetch(`${site}/s/${token}`);
+  assert.equal(gone.status, 404);
+  assert.ok((await gone.text()).includes('no longer available'));
+});
+
+test('a link dies with its item and cannot point outside My Files', async () => {
+  await upload('/me/temp.txt', Buffer.from('t'));
+  const created = await call('POST', '/links', { path: '/me/temp.txt', expiresInDays: null });
+  assert.equal(created.body.link.expiresAt, null);
+  await call('DELETE', '/files/?path=/me/temp.txt');
+  assert.deepEqual((await call('GET', '/links?path=/me/temp.txt')).body.links, []);
+
+  assert.equal((await call('POST', '/links', { path: '/me' })).status, 400);
+  assert.equal((await call('POST', '/links', { path: '/me/nothing-here' })).status, 404);
+  assert.equal((await call('POST', '/links', { path: '/me/a.txt', expiresInDays: 0 })).status, 400);
+});
