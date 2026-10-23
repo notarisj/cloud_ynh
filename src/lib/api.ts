@@ -385,6 +385,13 @@ export function ticket(path: string): Promise<{ token: string; expiresIn: number
   return request('/files/ticket', jsonBody({ path }));
 }
 
+/** What changed most recently under a root, newest first — Recents. */
+export async function recentChanges(root: string, since: number, limit: number): Promise<FileEntry[]> {
+  const params = new URLSearchParams({ root, since: String(since), newest: '1', limit: String(limit) });
+  const response = await request<{ changes: FileEntry[] }>(`/sync/changes?${params}`);
+  return response.changes;
+}
+
 /** Server facts that do not need a session. Null when the server is too old to say. */
 export async function serverConfig(): Promise<ServerConfig | null> {
   try {

@@ -89,7 +89,7 @@ ram.runtime = "256M"
   main.default = 3010
 
   [resources.apt]
-  packages = ["poppler-utils", "ffmpeg"]
+  packages = ["poppler-utils", "ffmpeg", "libheif-examples"]
 
   [resources.permissions]
 

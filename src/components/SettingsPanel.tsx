@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { PromptDialog, Scrim } from './Dialogs';
+import { Avatar } from './Avatar';
 import { Icon } from './Icon';
 import { formatBytes, formatDate } from '../lib/format';
 import * as api from '../lib/api';
@@ -95,9 +96,7 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
           <section className="sheet__section">
             <h3>Account</h3>
             <div className="sheet__row">
-              <div className="storage__avatar" aria-hidden="true">
-                {(session.user.displayName || session.user.username).slice(0, 2).toUpperCase()}
-              </div>
+              <Avatar name={session.user.displayName || session.user.username} size={36} />
               <div className="sheet__rowtext">
                 <strong>{session.user.displayName || session.user.username}</strong>
                 <span>

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 // VITE_APP_PATH is set by the YunoHost install script to the sub-path the app
@@ -19,6 +19,8 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
   },
   plugins: [react()],
+  // The server has its own suite, run with node:test from server/.
+  test: { include: ['src/**/*.test.ts'] },
   server: {
     port: 5173,
     proxy: {

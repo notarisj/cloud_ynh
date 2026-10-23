@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import archiver from 'archiver';
 import { Router, type RequestHandler } from 'express';
 import { wrap } from '../lib/async';
 import { badRequest, unauthorized } from '../lib/errors';
@@ -6,9 +8,9 @@ import { contentDisposition, mimeFor, previewKind } from '../lib/mime';
 import { ensureRoot, principal } from '../middleware/auth';
 import * as storage from '../services/storage';
 import * as thumbs from '../services/thumbs';
-import { ticketCovers, verifyAccessToken, verifyTicket } from '../services/tokens';
+import { assertSessionActive, ticketCovers, verifyAccessToken, verifyTicket } from '../services/tokens';
 import { config } from '../config';
-import { parseVPath } from '../lib/vpath';
+import { parseVPath, resolveVPath } from '../lib/vpath';
 
 export const mediaRouter: Router = Router();
 
@@ -35,8 +37,11 @@ const authOrTicket: RequestHandler = (req, _res, next) => {
   const header = req.headers.authorization;
   if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) {
     try {
-      req.user = verifyAccessToken(header.slice(7).trim());
-      next();
+      const claims = verifyAccessToken(header.slice(7).trim());
+      assertSessionActive(claims.username, claims.sid).then(() => {
+        req.user = claims;
+        next();
+      }, next);
     } catch (err) {
       next(err);
     }
@@ -51,25 +56,42 @@ const authOrTicket: RequestHandler = (req, _res, next) => {
 
   try {
     const claims = verifyTicket(ticket);
-    const requested = typeof req.query.path === 'string' ? req.query.path : '';
+    const requested = pathParams(req);
+    if (requested.length === 0) throw badRequest('"path" is required', 'missing_parameter');
     // parseVPath normalises before the prefix check, so "/me/a/../../b" cannot
-    // masquerade as a path inside the ticket's scope.
-    const normalised = parseVPath(claims.username, requested).vpath;
-    if (!ticketCovers(claims, normalised)) {
-      next(unauthorized('This link does not cover that file', 'ticket_scope'));
-      return;
+    // masquerade as a path inside the ticket's scope. An archive of several
+    // items needs every one of them covered.
+    for (const each of requested) {
+      if (!ticketCovers(claims, parseVPath(claims.username, each).vpath)) {
+        next(unauthorized('This link does not cover that file', 'ticket_scope'));
+        return;
+      }
     }
-    req.user = {
+    const user = {
       username: claims.username,
       displayName: claims.username,
       isAdmin: false,
       sid: 'ticket',
     };
-    next();
+    // A ticket minted for a session lives no longer than that session.
+    // Tickets from before tickets carried a session are honoured until they
+    // expire on their own, which is at most fifteen minutes.
+    const check = claims.sid ? assertSessionActive(claims.username, claims.sid) : Promise.resolve();
+    check.then(() => {
+      req.user = user;
+      next();
+    }, next);
   } catch (err) {
     next(err);
   }
 };
+
+/** Every `path` in the query — an archive may name several. */
+function pathParams(req: Parameters<RequestHandler>[0]): string[] {
+  const value = req.query.path;
+  const list = Array.isArray(value) ? value : [value];
+  return list.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
 
 function pathParam(req: Parameters<RequestHandler>[0]): string {
   const value = req.query.path;
@@ -194,6 +216,80 @@ mediaRouter.get(
         : "default-src 'none'; sandbox",
     );
     streamFile(req, res, resolved.abs, name, stats.size, `${stats.ino}-${stats.size}-${stats.mtimeMs}`, true);
+  }),
+);
+
+//=================================================
+// Archives
+//=================================================
+// Folders, and selections of several items, download as one ZIP. It is
+// streamed as it is built — nothing is staged on disk — and stored rather
+// than compressed: photos and video, which are most of what lives here, do
+// not shrink, and storing keeps a large archive from pinning a CPU.
+
+mediaRouter.get(
+  '/archive',
+  authOrTicket,
+  ensureRoot,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const requested = pathParams(req);
+    if (requested.length === 0) throw badRequest('"path" is required', 'missing_parameter');
+    if (requested.length > 1000) throw badRequest('Too many items for one archive', 'too_many');
+
+    // Everything is resolved before the first byte goes out: once the
+    // response has started, an error can only cut it short.
+    const items = [];
+    for (const vpath of requested) {
+      const resolved = await storage.stat(user.username, vpath);
+      const abs = (await resolveVPath(user.username, resolved.path, { mustExist: true })).abs;
+      if (!abs) throw badRequest('Shared is not a folder that can be downloaded', 'share_index');
+      items.push({ entry: resolved, abs });
+    }
+
+    const only = items.length === 1 ? items[0] : undefined;
+    const requestedName = typeof req.query.name === 'string' ? req.query.name : '';
+    // A file's extension gives way to ".zip"; a folder's name is kept whole.
+    const base = only
+      ? only.entry.isDir ? only.entry.name : only.entry.name.replace(/\.[^.]+$/, '')
+      : requestedName || 'Download';
+    const archiveName = `${base.replace(/[/\\\0]/g, '_').slice(0, 120) || 'Download'}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', contentDisposition(archiveName, false));
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    const archive = archiver('zip', { store: true });
+    archive.on('warning', (err) => console.warn('[cloud] archive warning:', err.message));
+    archive.on('error', () => res.destroy());
+    // A download cancelled half-way stops the walk instead of finishing it
+    // for nobody.
+    res.on('close', () => {
+      if (!res.writableFinished) archive.abort();
+    });
+    archive.pipe(res);
+
+    const used = new Set<string>();
+    for (const { entry, abs } of items) {
+      // Two selected items can share a name when they come from different
+      // folders; the second becomes "name 2", as anywhere else.
+      let top = entry.name;
+      for (let n = 2; used.has(top); n += 1) top = `${path.parse(entry.name).name} ${n}${path.parse(entry.name).ext}`;
+      used.add(top);
+
+      if (!entry.isDir) {
+        archive.file(abs, { name: top, date: new Date(entry.mtime) });
+        continue;
+      }
+      archive.append('', { name: `${top}/` });
+      for await (const item of storage.filesBeneath(abs, top)) {
+        if (item.isDir) archive.append('', { name: `${item.name}/` });
+        else archive.file(item.abs, { name: item.name });
+      }
+    }
+
+    await archive.finalize();
   }),
 );
 

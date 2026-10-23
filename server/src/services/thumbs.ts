@@ -11,8 +11,11 @@ import { previewKind } from '../lib/mime';
 
 const run = promisify(execFile);
 
-/** Sizes the API will produce. A closed set keeps the cache bounded. */
-export const THUMB_SIZES = [128, 256, 512, 1024] as const;
+/**
+ * Sizes the API will produce. A closed set keeps the cache bounded. 2048 is
+ * the full-screen rendition, for formats a browser cannot display itself.
+ */
+export const THUMB_SIZES = [128, 256, 512, 1024, 2048] as const;
 export type ThumbSize = (typeof THUMB_SIZES)[number];
 
 export function normaliseSize(requested: unknown): ThumbSize {
@@ -30,7 +33,14 @@ const MAX_SOURCE_BYTES = 200 * 1024 * 1024;
 // ffmpeg and pdftoppm are declared as apt dependencies, but the app must still
 // work if a minimal host is missing one — the file simply has no thumbnail.
 
-let toolCache: { ffmpeg: boolean; pdftoppm: boolean } | null = null;
+interface Tools {
+  ffmpeg: boolean;
+  pdftoppm: boolean;
+  /** libheif's converter: "heif-dec" in newer releases, "heif-convert" before. */
+  heif: string | null;
+}
+
+let toolCache: Tools | null = null;
 
 async function hasTool(name: string): Promise<boolean> {
   try {
@@ -41,12 +51,13 @@ async function hasTool(name: string): Promise<boolean> {
   }
 }
 
-async function tools(): Promise<{ ffmpeg: boolean; pdftoppm: boolean }> {
+async function tools(): Promise<Tools> {
   if (!toolCache) {
-    toolCache = { ffmpeg: await hasTool('ffmpeg'), pdftoppm: await hasTool('pdftoppm') };
+    const heif = (await hasTool('heif-dec')) ? 'heif-dec' : (await hasTool('heif-convert')) ? 'heif-convert' : null;
+    toolCache = { ffmpeg: await hasTool('ffmpeg'), pdftoppm: await hasTool('pdftoppm'), heif };
     console.log(
       `[cloud] preview tools — ffmpeg: ${toolCache.ffmpeg ? 'yes' : 'no'}, ` +
-        `pdftoppm: ${toolCache.pdftoppm ? 'yes' : 'no'}`,
+        `pdftoppm: ${toolCache.pdftoppm ? 'yes' : 'no'}, heif: ${heif ?? 'no'}`,
     );
   }
   return toolCache;
@@ -97,7 +108,8 @@ export async function thumbnailFor(
 
   try {
     const kind = previewKind(name);
-    if (kind === 'image') await renderImage(absPath, temp, size);
+    if (kind === 'image' && HEIF.test(name)) await renderHeif(absPath, temp, size);
+    else if (kind === 'image') await renderImage(absPath, temp, size);
     else if (kind === 'video') await renderVideo(absPath, temp, size);
     else if (kind === 'pdf') await renderPdf(absPath, temp, size);
     else throw notFound('No thumbnail available for this file type');
@@ -129,17 +141,45 @@ async function renderImage(source: string, destination: string, size: ThumbSize)
     .toFile(destination);
 }
 
+const HEIF = /\.(heic|heif)$/i;
+
+/**
+ * HEIC is what every iPhone photo is, and the libvips that sharp ships cannot
+ * decode its HEVC payload. libheif's own converter can; the decoded JPEG then
+ * goes through the same resize as any other image. sharp is tried first, so a
+ * libvips built with HEVC support is used when there is one.
+ */
+async function renderHeif(source: string, destination: string, size: ThumbSize): Promise<void> {
+  try {
+    await renderImage(source, destination, size);
+    return;
+  } catch {
+    /* Fall through to libheif. */
+  }
+
+  const converter = (await tools()).heif;
+  if (!converter) throw notFound('HEIC thumbnails are unavailable on this server');
+
+  const decoded = path.join(os.tmpdir(), `cloud-heif-${crypto.randomUUID()}.jpg`);
+  try {
+    await run(converter, ['-q', '92', source, decoded], { timeout: 30_000, maxBuffer: 1024 * 1024 });
+    await renderImage(decoded, destination, size);
+  } finally {
+    await fs.rm(decoded, { force: true }).catch(() => undefined);
+  }
+}
+
 async function renderVideo(source: string, destination: string, size: ThumbSize): Promise<void> {
   if (!(await tools()).ffmpeg) throw notFound('Video thumbnails are unavailable on this server');
 
   const frame = path.join(os.tmpdir(), `cloud-frame-${crypto.randomUUID()}.jpg`);
-  try {
-    await run(
+  const grab = (seek: string[]) =>
+    run(
       'ffmpeg',
       [
         '-nostdin', '-loglevel', 'error',
         // Seek before -i so ffmpeg jumps rather than decoding from the start.
-        '-ss', '00:00:01',
+        ...seek,
         '-i', source,
         '-frames:v', '1',
         '-vf', `scale='min(${size},iw)':-2`,
@@ -147,6 +187,13 @@ async function renderVideo(source: string, destination: string, size: ThumbSize)
       ],
       { timeout: 20_000, maxBuffer: 1024 * 1024 },
     );
+  try {
+    // A second in skips the black first frame most clips open on. A clip
+    // shorter than that leaves ffmpeg nothing to write, so it then takes the
+    // very first frame instead.
+    await grab(['-ss', '00:00:01']);
+    const written = await fs.stat(frame).then((stats) => stats.size > 0).catch(() => false);
+    if (!written) await grab([]);
     await renderImage(frame, destination, size);
   } finally {
     await fs.rm(frame, { force: true }).catch(() => undefined);

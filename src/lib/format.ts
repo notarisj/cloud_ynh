@@ -58,6 +58,28 @@ export function formatRelativeDays(days: number): string {
   return RELATIVE.format(Math.round(days), 'day');
 }
 
+/**
+ * Image formats a browser cannot be relied on to display, which the preview
+ * shows through the server's JPEG rendition instead of the original bytes.
+ */
+export function needsRendition(name: string): boolean {
+  return /\.(heic|heif|tiff?)$/i.test(name);
+}
+
+/**
+ * Up to two initials, split on the separators a user name or a display name
+ * uses: "Jane Doe" and "jane.doe" both give "JD". Matches the iOS app.
+ */
+export function initials(name: string): string {
+  const letters = name
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
+  return letters || '?';
+}
+
 /** The display name without its extension, for rename fields and grid labels. */
 export function splitExtension(name: string): { base: string; extension: string } {
   const dot = name.lastIndexOf('.');

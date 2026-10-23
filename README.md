@@ -42,7 +42,7 @@ You are asked for:
 | Largest single upload (GB) | `20` | Rejected before any bytes transfer |
 | Sharing | yes | Lets users publish their own items to everyone with access |
 | Passkeys | yes | Lets users sign in without a password |
-| Thumbnails | yes | Needs `ffmpeg` and `poppler-utils`, installed automatically |
+| Thumbnails | yes | Needs `ffmpeg`, `poppler-utils` and `libheif-examples` (for iPhone HEIC photos), installed automatically |
 
 All five can be changed later without reinstalling, from the app's Config panel
 or with `yunohost app config set cloud`.
@@ -214,6 +214,7 @@ what lets the iOS app be pointed at a development server. That is also why the s
 `PROXY_SECRET` and `JWT_SECRET` — those are what turn the shortcut off.
 
 ```bash
+npm test && npm test --prefix server   # unit and API tests
 npm run typecheck --prefix server
 npm run build
 ```

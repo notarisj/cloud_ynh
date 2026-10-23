@@ -532,6 +532,74 @@ export async function hardDelete(username: string, vpath: string): Promise<void>
 }
 
 //=================================================
+// Folder contents, for Get Info and archives
+//=================================================
+
+export interface Measurement {
+  /** Bytes in every file beneath the item, or the file's own size. */
+  size: number;
+  files: number;
+  folders: number;
+  /** False when the walk was cut short and the figures are a floor. */
+  complete: boolean;
+}
+
+/**
+ * Every regular file beneath a folder, with the path it should have inside
+ * an archive. Symbolic links and hidden entries are skipped, exactly as a
+ * listing skips them, so an archive never reaches outside the tree it was
+ * asked for and never contains anything the folder view does not show.
+ */
+export async function* filesBeneath(
+  absDir: string,
+  prefix: string,
+  depth = 0,
+): AsyncGenerator<{ abs: string; name: string; isDir: boolean }> {
+  if (depth > 64) return;
+  const dirents = await fs.readdir(absDir, { withFileTypes: true }).catch(() => []);
+  for (const dirent of dirents) {
+    if (dirent.name.startsWith('.')) continue;
+    const abs = path.join(absDir, dirent.name);
+    const name = `${prefix}/${dirent.name}`;
+    if (dirent.isDirectory()) {
+      yield { abs, name, isDir: true };
+      yield* filesBeneath(abs, name, depth + 1);
+    } else if (dirent.isFile()) {
+      yield { abs, name, isDir: false };
+    }
+  }
+}
+
+/** Size and item counts of a file or folder, for Get Info. Bounded in time. */
+export async function measure(username: string, vpath: string): Promise<Measurement> {
+  const resolved = await resolveVPath(username, vpath, { mustExist: true });
+  if (resolved.isShareIndex) {
+    return { size: 0, files: 0, folders: shares.all().length, complete: true };
+  }
+
+  const stats = await fs.stat(resolved.abs).catch((e) => {
+    throw fromNodeError(e);
+  });
+  if (!stats.isDirectory()) return { size: stats.size, files: 1, folders: 0, complete: true };
+
+  const deadline = Date.now() + 5000;
+  const result: Measurement = { size: 0, files: 0, folders: 0, complete: true };
+  for await (const item of filesBeneath(resolved.abs, '')) {
+    if (Date.now() > deadline) {
+      result.complete = false;
+      break;
+    }
+    if (item.isDir) {
+      result.folders += 1;
+    } else {
+      result.files += 1;
+      result.size += (await fs.stat(item.abs).catch(() => null))?.size ?? 0;
+    }
+  }
+  return result;
+}
+
+//=================================================
 // Search
 //=================================================
 

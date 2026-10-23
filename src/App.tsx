@@ -6,6 +6,7 @@ import { ApiError, SessionExpiredError } from './lib/api';
 import type { FileEntry, Listing, Session, SortKey, TrashItem } from './lib/api';
 import { breadcrumbs, splitExtension } from './lib/format';
 import { loadPreferences, savePreferences } from './lib/prefs';
+import { locationHash, readHash, type View } from './lib/routing';
 import { filesFromDrop, uploads } from './lib/uploads';
 import { ContextMenu, type MenuAction } from './components/ContextMenu';
 import { ConfirmDialog, PromptDialog } from './components/Dialogs';
@@ -20,7 +21,6 @@ import { SignIn } from './components/SignIn';
 import { TrashView } from './components/TrashView';
 import { UploadTray } from './components/UploadTray';
 
-type View = 'browse' | 'trash' | 'search';
 
 /** Clipboard for cut/copy, held only for the lifetime of the page. */
 interface Clipboard {
@@ -37,41 +37,6 @@ type Dialog =
   | { kind: 'pick'; operation: 'move' | 'copy'; entries: FileEntry[] }
   | null;
 
-//=================================================
-// Hash routing
-//=================================================
-// The app lives under whatever sub-path YunoHost installed it at, so a
-// history-based router would need that path threaded through everything. The
-// hash carries the location instead: it survives reloads, makes folders
-// linkable, and is completely indifferent to the mount point.
-
-function readHash(): { view: View; path: string; query: string } {
-  const hash = window.location.hash.replace(/^#/, '');
-  if (hash === 'trash') return { view: 'trash', path: '/me', query: '' };
-  if (hash.startsWith('search=')) {
-    return { view: 'search', path: '/me', query: safeDecode(hash.slice(7)) };
-  }
-  const path = hash.startsWith('/') ? hash.split('/').map(safeDecode).join('/') : '/me';
-  return { view: 'browse', path, query: '' };
-}
-
-/**
- * Each segment is encoded on its own: encodeURI would leave "#" and "?" in a
- * folder name alone, and the address bar would then cut the path short.
- */
-function pathHash(path: string): string {
-  return '#' + path.split('/').map(encodeURIComponent).join('/');
-}
-
-/** A hand-edited or truncated hash must not take the whole app down. */
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
 /** Renew a read ticket this long before it lapses. */
 const TICKET_MARGIN_MS = 60_000;
 
@@ -81,12 +46,14 @@ export function App() {
   const [expired, setExpired] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
 
-  const initial = useMemo(readHash, []);
+  const initial = useMemo(() => readHash(), []);
   const [view, setView] = useState<View>(initial.view);
   const [path, setPath] = useState(initial.path);
   const [query, setQuery] = useState(initial.query);
 
   const [listing, setListing] = useState<Listing | null>(null);
+  // Search results and Recents are both flat lists drawn from anywhere, with
+  // one ticket covering every root.
   const [searchResults, setSearchResults] = useState<{ results: FileEntry[]; ticket: string } | null>(null);
   const [trash, setTrash] = useState<{ items: TrashItem[]; retentionDays: number } | null>(null);
 
@@ -185,6 +152,8 @@ export function App() {
     try {
       if (view === 'trash') {
         setTrash(await api.listTrash());
+      } else if (view === 'recents') {
+        setSearchResults(await loadRecents(session));
       } else if (view === 'search') {
         if (query.trim().length < 2) {
           setSearchResults({ results: [], ticket: '' });
@@ -209,8 +178,7 @@ export function App() {
 
   // Keep the address bar in step with the current location.
   useEffect(() => {
-    const hash =
-      view === 'trash' ? '#trash' : view === 'search' ? `#search=${encodeURIComponent(query)}` : pathHash(path);
+    const hash = locationHash({ view, path, query });
     if (window.location.hash !== hash) window.history.replaceState(null, '', hash);
   }, [view, path, query]);
 
@@ -230,9 +198,10 @@ export function App() {
   // Thumbnails, previews and download links carry a read ticket that lasts a
   // quarter of an hour. A page left open longer would quietly stop loading
   // images, so the ticket is renewed shortly before it runs out.
-  const ticketScope = view === 'search' ? '/' : (listing?.entry.path ?? null);
-  const ticketToken = view === 'search' ? searchResults?.ticket : listing?.ticket.token;
-  const ticketLifetime = view === 'search' ? 15 * 60 : (listing?.ticket.expiresIn ?? 15 * 60);
+  const flat = view === 'search' || view === 'recents';
+  const ticketScope = flat ? '/' : (listing?.entry.path ?? null);
+  const ticketToken = flat ? searchResults?.ticket : listing?.ticket.token;
+  const ticketLifetime = flat ? 15 * 60 : (listing?.ticket.expiresIn ?? 15 * 60);
 
   useEffect(() => {
     if (!ticketScope || !ticketToken) return;
@@ -273,8 +242,8 @@ export function App() {
     setSidebarOpen(false);
   }, []);
 
-  const entries = view === 'search' ? (searchResults?.results ?? []) : (listing?.entries ?? []);
-  const ticket = view === 'search' ? (searchResults?.ticket ?? null) : (listing?.ticket.token ?? null);
+  const entries = flat ? (searchResults?.results ?? []) : (listing?.entries ?? []);
+  const ticket = flat ? (searchResults?.ticket || null) : (listing?.ticket.token ?? null);
   const previewable = useMemo(() => entries.filter((entry) => !entry.isDir), [entries]);
 
   // Shared is a view of what other people published, so nothing can be written
@@ -625,12 +594,22 @@ export function App() {
           setSelection(new Set());
           setSidebarOpen(false);
         }}
+        onShowRecents={() => {
+          setView('recents');
+          setQuery('');
+          setSelection(new Set());
+          setSidebarOpen(false);
+        }}
         onShowSettings={() => {
           setSettingsOpen(true);
           setSidebarOpen(false);
         }}
         onClose={() => setSidebarOpen(false)}
       />
+
+      {/* Narrow screens slide the sidebar over the content; a tap beside it
+          closes it, the way a sheet is dismissed. */}
+      {sidebarOpen && <div className="sidebar__scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
 
       <main className="main">
         <header className="toolbar">
@@ -656,7 +635,7 @@ export function App() {
           {view === 'browse' ? (
             <nav className="crumbs" aria-label="Breadcrumb">
               {crumbs.map((crumb, index) => (
-                <span key={crumb.path} style={{ display: 'contents' }}>
+                <span key={crumb.path} className="crumbs__step">
                   {index > 0 && <Icon name="chevronRight" size={13} weight={2.2} className="crumbs__sep" />}
                   <button type="button" className="crumbs__item" onClick={() => navigate(crumb.path)}>
                     {crumb.label}
@@ -666,7 +645,7 @@ export function App() {
             </nav>
           ) : (
             <h1 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>
-              {view === 'trash' ? 'Recently Deleted' : `Results for “${query}”`}
+              {view === 'trash' ? 'Recently Deleted' : view === 'recents' ? 'Recents' : `Results for “${query}”`}
             </h1>
           )}
 
@@ -719,9 +698,14 @@ export function App() {
               >
                 <Icon name="folderPlus" size={18} />
               </button>
-              <button type="button" className="button button--primary" onClick={() => filePicker.current?.click()}>
+              <button
+                type="button"
+                className="button button--primary"
+                onClick={() => filePicker.current?.click()}
+                aria-label="Upload files"
+              >
                 <Icon name="upload" size={15} />
-                Upload
+                <span className="button__label">Upload</span>
               </button>
             </div>
           )}
@@ -789,7 +773,7 @@ export function App() {
               sort={sort}
               descending={descending}
               selection={selection}
-              showOwner={currentRoot === 'shared' || view === 'search'}
+              showOwner={currentRoot === 'shared' || flat}
               onSelectionChange={setSelection}
               onOpen={open}
               onContextMenu={(entry, event) => {
@@ -986,6 +970,27 @@ export function App() {
   );
 }
 
+/** How far back Recents reaches, and how much of it is shown — the same as iOS. */
+const RECENTS_WINDOW_MS = 30 * 86_400_000;
+const RECENTS_LIMIT = 100;
+
+/**
+ * What changed lately, newest first, wherever it lives. Every root is asked,
+ * because something shared with you is as recent as anything of your own.
+ */
+async function loadRecents(session: Session): Promise<{ results: FileEntry[]; ticket: string }> {
+  const since = Date.now() - RECENTS_WINDOW_MS;
+  const [lists, ticket] = await Promise.all([
+    Promise.all(session.roots.map((root) => api.recentChanges(root.path, since, RECENTS_LIMIT * 2).catch(() => []))),
+    api.ticket('/'),
+  ]);
+
+  const newest = new Map<string, FileEntry>();
+  for (const entry of lists.flat()) if (!entry.isDir) newest.set(entry.path, entry);
+  const results = [...newest.values()].sort((a, b) => b.mtime - a.mtime).slice(0, RECENTS_LIMIT);
+  return { results, ticket: ticket.token };
+}
+
 function EmptyState({
   view, query, shared, onUpload,
 }: {
@@ -1000,6 +1005,16 @@ function EmptyState({
         <Icon name="search" size={44} weight={1.2} />
         <h2>No results</h2>
         <p>Nothing matched “{query}”.</p>
+      </div>
+    );
+  }
+
+  if (view === 'recents') {
+    return (
+      <div className="empty">
+        <Icon name="clock" size={48} weight={1.2} />
+        <h2>No recent files</h2>
+        <p>Files you add or change show up here.</p>
       </div>
     );
   }

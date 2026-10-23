@@ -97,8 +97,9 @@ in with the account password either way.
 
 ## Thumbnails
 
-Images use `libvips` (bundled with the app), videos use `ffmpeg`, PDFs use
-`pdftoppm`. Both external tools are installed as dependencies; if either is
+Images use `libvips` (bundled with the app), iPhone HEIC photos use libheif's
+`heif-convert`, videos use `ffmpeg`, PDFs use `pdftoppm`. The external tools are
+installed as dependencies; if one is
 missing the corresponding files simply have no thumbnail and everything else
 works. The startup log records what was found.
 

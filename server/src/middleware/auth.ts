@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'crypto';
 import type { Request, RequestHandler } from 'express';
 import { config } from '../config';
 import { forbidden, unauthorized } from '../lib/errors';
-import { verifyAccessToken, type Principal } from '../services/tokens';
+import { assertSessionActive, verifyAccessToken, type Principal } from '../services/tokens';
 import { ensureUserRoot } from '../services/storage';
 
 declare global {
@@ -99,8 +99,11 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
 
   try {
     const claims = verifyAccessToken(token);
-    req.user = claims;
-    next();
+    // A valid signature is not enough: the device may have been signed out.
+    assertSessionActive(claims.username, claims.sid).then(() => {
+      req.user = claims;
+      next();
+    }, next);
   } catch (err) {
     next(err);
   }

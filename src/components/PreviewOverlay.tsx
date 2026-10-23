@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
-import { downloadUrl, fetchText, previewUrl } from '../lib/api';
+import { downloadUrl, fetchText, previewUrl, thumbUrl } from '../lib/api';
+import { needsRendition } from '../lib/format';
 import type { FileEntry } from '../lib/api';
 
 interface PreviewOverlayProps {
@@ -204,7 +205,9 @@ function PreviewBody({
     case 'image':
       return (
         <img
-          src={source}
+          // HEIC and TIFF are what cameras and scanners produce and what most
+          // browsers cannot draw; the server renders them to a full-screen JPEG.
+          src={needsRendition(entry.name) ? thumbUrl(ticket, entry.path, 2048) : source}
           alt={entry.name}
           className={zoomed ? 'preview__media preview__media--zoomed' : 'preview__media'}
           onClick={onToggleZoom}

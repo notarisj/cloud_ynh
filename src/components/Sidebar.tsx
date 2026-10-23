@@ -1,16 +1,19 @@
+import { Avatar } from './Avatar';
 import { Icon } from './Icon';
 import { formatBytes } from '../lib/format';
 import type { RootInfo, Usage } from '../lib/api';
+import type { View } from '../lib/routing';
 
 interface SidebarProps {
   roots: RootInfo[];
   currentRoot: string | null;
-  view: 'browse' | 'trash' | 'search';
+  view: View;
   user: { displayName: string; username: string };
   usage: Usage | null;
   open: boolean;
   onNavigate: (path: string) => void;
   onShowTrash: () => void;
+  onShowRecents: () => void;
   onShowSettings: () => void;
   onClose: () => void;
 }
@@ -18,7 +21,7 @@ interface SidebarProps {
 const ROOT_ICONS: Record<string, 'home' | 'shared'> = { me: 'home', shared: 'shared' };
 
 export function Sidebar({
-  roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onShowSettings, onClose,
+  roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onShowRecents, onShowSettings, onClose,
 }: SidebarProps) {
   // An unlimited quota has no meaningful bar, so the meter falls back to the
   // volume's free space — still useful, and honest about what it is showing.
@@ -26,12 +29,6 @@ export function Sidebar({
   const fraction = metered ? Math.min(1, usage.usedBytes / usage.quotaBytes) : 0;
   const level = fraction > 0.95 ? 'full' : fraction > 0.8 ? 'warn' : 'ok';
 
-  const initials = (user.displayName || user.username)
-    .split(/[\s._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
-    .join('');
 
   return (
     <nav className="sidebar" data-open={open} aria-label="Locations">
@@ -48,6 +45,16 @@ export function Sidebar({
           <Icon name="close" size={18} />
         </button>
       </div>
+
+      <button
+        type="button"
+        className="sidebar__item"
+        aria-current={view === 'recents'}
+        onClick={onShowRecents}
+      >
+        <Icon name="clock" size={18} />
+        <span>Recents</span>
+      </button>
 
       <div className="sidebar__section">Locations</div>
 
@@ -103,7 +110,7 @@ export function Sidebar({
         )}
 
         <button type="button" className="storage__user" onClick={onShowSettings} title="Settings">
-          <div className="storage__avatar" aria-hidden="true">{initials || '?'}</div>
+          <Avatar name={user.displayName || user.username} />
           <span>{user.displayName || user.username}</span>
           <Icon name="info" size={16} />
         </button>

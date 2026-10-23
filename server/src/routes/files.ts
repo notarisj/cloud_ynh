@@ -57,7 +57,7 @@ filesRouter.get(
       parent: parentVPath(entry.path),
       // Bundled so that opening a folder is one round trip, not one plus one
       // per thumbnail the client is about to request.
-      ticket: { token: signTicket(user.username, entry.path), expiresIn: TICKET_TTL_SECONDS },
+      ticket: { token: signTicket(user.username, entry.path, user.sid), expiresIn: TICKET_TTL_SECONDS },
     });
   }),
 );
@@ -67,6 +67,17 @@ filesRouter.get(
   wrap(async (req, res) => {
     const user = principal(req);
     res.json({ entry: await storage.stat(user.username, stringParam(req.query.path, 'path')) });
+  }),
+);
+
+/** Get Info: the entry, plus what a folder holds. */
+filesRouter.get(
+  '/info',
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const vpath = stringParam(req.query.path, 'path');
+    const [entry, contents] = await Promise.all([storage.stat(user.username, vpath), storage.measure(user.username, vpath)]);
+    res.json({ entry, contents });
   }),
 );
 
@@ -85,7 +96,7 @@ filesRouter.get(
     res.json({
       results,
       // Search spans roots, so the ticket has to as well.
-      ticket: { token: signTicket(user.username, '/'), expiresIn: TICKET_TTL_SECONDS },
+      ticket: { token: signTicket(user.username, '/', user.sid), expiresIn: TICKET_TTL_SECONDS },
     });
   }),
 );
@@ -102,7 +113,7 @@ filesRouter.post(
     // Resolving proves the caller can reach it before a ticket is written for it.
     if (scope !== '/') await storage.stat(user.username, scope);
 
-    res.json({ token: signTicket(user.username, scope), expiresIn: TICKET_TTL_SECONDS });
+    res.json({ token: signTicket(user.username, scope, user.sid), expiresIn: TICKET_TTL_SECONDS });
   }),
 );
 

@@ -154,6 +154,41 @@ async function writeStore(username: string, tokens: StoredToken[]): Promise<void
   const temp = `${target}.${process.pid}.tmp`;
   await fs.writeFile(temp, JSON.stringify(tokens), { mode: 0o600 });
   await fs.rename(temp, target);
+  liveSessions.delete(username);
+}
+
+//=================================================
+// Revocation
+//=================================================
+// An access token is a signed claim that cannot be recalled, so on its own a
+// revoked device would keep working until its token expired. Every request
+// therefore also checks that the session it belongs to still exists. The set
+// of live sessions is cached per account for a few seconds and dropped the
+// moment that account's store is written, so a revocation made by this
+// process takes effect on the very next request.
+
+const LIVE_SESSION_TTL_MS = 10_000;
+const liveSessions = new Map<string, { ids: Set<string>; readAt: number }>();
+
+/**
+ * Sessions that are not refresh-token families: the portal bridge re-mints
+ * from the portal's own session, and development has no store at all.
+ */
+function isStorelessSession(sid: string): boolean {
+  return sid.startsWith('sso:') || sid === 'dev-session';
+}
+
+export async function assertSessionActive(username: string, sid: string): Promise<void> {
+  if (isStorelessSession(sid)) return;
+
+  let cached = liveSessions.get(username);
+  if (!cached || Date.now() - cached.readAt > LIVE_SESSION_TTL_MS) {
+    const tokens = await readStore(username);
+    cached = { ids: new Set(tokens.map((token) => token.id)), readAt: Date.now() };
+    liveSessions.set(username, cached);
+  }
+
+  if (!cached.ids.has(sid)) throw unauthorized('This device has been signed out', 'session_revoked');
 }
 
 /** Cap how many live sessions one account can accumulate. */
@@ -304,13 +339,15 @@ export interface TicketClaims {
   username: string;
   /** Virtual path prefix this ticket covers, e.g. "/me/Photos". */
   scope: string;
+  /** Session the ticket was minted for; it dies with that session. */
+  sid?: string;
 }
 
 /** Long enough to open a folder and scroll it; short enough that a leaked URL is worthless. */
 export const TICKET_TTL_SECONDS = 15 * 60;
 
-export function signTicket(username: string, scope: string): string {
-  return jwt.sign({ sub: username, scp: scope }, config.auth.jwtSecret, {
+export function signTicket(username: string, scope: string, sid: string): string {
+  return jwt.sign({ sub: username, scp: scope, sid }, config.auth.jwtSecret, {
     expiresIn: TICKET_TTL_SECONDS,
     issuer: config.auth.requiredPermission,
     audience: 'ticket',
@@ -331,7 +368,11 @@ export function verifyTicket(token: string): TicketClaims {
   if (typeof payload.sub !== 'string' || typeof payload.scp !== 'string') {
     throw unauthorized('Malformed link', 'ticket_invalid');
   }
-  return { username: payload.sub, scope: payload.scp };
+  return {
+    username: payload.sub,
+    scope: payload.scp,
+    sid: typeof payload.sid === 'string' ? payload.sid : undefined,
+  };
 }
 
 /**

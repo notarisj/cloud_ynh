@@ -159,7 +159,20 @@ function originsFor(publicUrl: string, isProd: boolean): string[] {
  * starting at all.
  */
 export function assertProductionConfig(): void {
-  if (!IS_PROD) return;
+  if (!IS_PROD) {
+    // Development mode attributes every request to DEV_USER without asking
+    // for anything. That is only safe on a developer's machine, so it refuses
+    // to run against a YunoHost data directory, or wherever the install has
+    // provisioned a proxy secret — whatever NODE_ENV happens to say.
+    if (config.storage.dataDir.startsWith('/home/yunohost.app') || config.auth.proxySecret) {
+      console.error(
+        '[cloud] FATAL: NODE_ENV is not "production" but this looks like an installed server. ' +
+          'Development mode would serve every request without authentication. Refusing to start.',
+      );
+      process.exit(1);
+    }
+    return;
+  }
 
   const missing: string[] = [];
   if (!config.auth.proxySecret) missing.push('PROXY_SECRET');

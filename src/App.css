@@ -155,20 +155,17 @@
   color: var(--text-secondary);
 }
 
-.storage__avatar {
-  /* Sized so the name starts on the same vertical line as "My Files" and
-     "Shared", which a 24px avatar pushed 5px to the right of. */
-  width: 20px;
-  height: 20px;
+.avatar {
+  /* 20px in the sidebar, so the name starts on the same vertical line as
+     "My Files" and "Shared"; larger where it heads a section. */
+  flex: none;
   border-radius: 50%;
   display: grid;
   place-items: center;
   background: var(--accent);
   color: var(--text-on-accent);
-  font-size: 10px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  flex: none;
 }
 
 /*=================================================
@@ -270,6 +267,8 @@
   min-width: 0;
   overflow: hidden;
 }
+
+.crumbs__step { display: contents; }
 
 .crumbs__item {
   display: inline-flex;
@@ -917,7 +916,45 @@
     box-shadow: var(--shadow-lg);
   }
 
-  .sidebar[data-open='true'] { transform: none; }
+  /* No shadow while it is parked off-screen: it would bleed into the page. */
+  .sidebar { box-shadow: none; }
+  .sidebar[data-open='true'] { transform: none; box-shadow: var(--shadow-lg); }
+
+  .sidebar__scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 74;
+    background: var(--bg-scrim);
+    animation: fade-in 200ms var(--ease);
+  }
+
+  /* The toolbar becomes two rows, as a navigation bar does on iPhone: the
+     place and its actions on top, the search field across the full width. */
+  .toolbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--toolbar-height);
+    padding: 8px 12px;
+    row-gap: 8px;
+  }
+
+  .searchfield,
+  .searchfield:focus-within {
+    order: 10;
+    flex-basis: 100%;
+    width: 100%;
+    height: 34px;
+  }
+
+  /* Only the current folder fits; the back button covers the rest. */
+  .crumbs__step:not(:last-child),
+  .crumbs__sep { display: none; }
+  .crumbs { flex: 1; }
+  .crumbs__item { font-size: 15px; }
+  .toolbar__spacer { display: none; }
+
+  .button__label { display: none; }
+  .toolbar .button--primary { width: 34px; padding: 0; justify-content: center; }
 
   .list__header,
   .row { grid-template-columns: var(--check-column) 1fr 92px 36px; }
@@ -926,8 +963,6 @@
   .list__header > :nth-child(4),
   .row > :nth-child(4) { display: none; }
 
-  .searchfield { width: 150px; }
-  .searchfield:focus-within { width: 200px; }
   .content { padding: 12px 12px 96px; }
   .tray { left: 12px; right: 12px; width: auto; }
 }

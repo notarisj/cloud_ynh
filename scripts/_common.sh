@@ -23,6 +23,7 @@ readonly RSYNC_EXCLUDES=(
     --exclude='dist'
     --exclude='server/dist'
     --exclude='server/.devdata'
+    --exclude='server/test'
     --exclude='ios'
 )
 

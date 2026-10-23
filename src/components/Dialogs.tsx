@@ -69,7 +69,10 @@ export function ConfirmDialog({
   title, message, confirmLabel, destructive, onConfirm, onCancel,
 }: ConfirmDialogProps) {
   const confirmButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => confirmButton.current?.focus(), []);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  // A destructive action is never the default: Return should not delete
+  // anything, so focus starts on Cancel there, as in every Apple alert.
+  useEffect(() => (destructive ? cancelButton : confirmButton).current?.focus(), [destructive]);
 
   return (
     <Scrim onDismiss={onCancel}>
@@ -77,7 +80,7 @@ export function ConfirmDialog({
         <h2>{title}</h2>
         <p>{message}</p>
         <div className="dialog__actions">
-          <button type="button" className="button" onClick={onCancel}>Cancel</button>
+          <button ref={cancelButton} type="button" className="button" onClick={onCancel}>Cancel</button>
           <button
             ref={confirmButton}
             type="button"
