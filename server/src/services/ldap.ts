@@ -25,6 +25,33 @@ function cnOf(dn: string): string {
   return rest.join('=').trim().toLowerCase();
 }
 
+const USER_ATTRIBUTES = ['uid', 'cn', 'displayName', 'mail', 'memberOf', 'permission'];
+
+/**
+ * What a user entry says about the account.
+ *
+ * YunoHost records group membership in `memberOf` and the permissions a user
+ * holds — directly or through a group — in `permission`. Both are read for
+ * the app permission, because which one carries it has varied between
+ * releases, and an account must not be refused on a technicality.
+ */
+function describe(
+  entry: Entry,
+  username: string,
+): Omit<LdapUser, 'username'> & { hasPermission: boolean; membershipKnown: boolean } {
+  const memberships = [...attr(entry, 'memberOf'), ...attr(entry, 'permission')].map(cnOf);
+  const required = config.auth.requiredPermission.toLowerCase();
+  return {
+    displayName: attr(entry, 'displayName')[0] ?? attr(entry, 'cn')[0] ?? username,
+    email: attr(entry, 'mail')[0],
+    isAdmin: memberships.includes(config.auth.adminGroup.toLowerCase()),
+    hasPermission: memberships.includes(required),
+    // Every YunoHost account is at least in all_users, so an entry with no
+    // memberships at all means the ACL hid them — not that there are none.
+    membershipKnown: memberships.length > 0,
+  };
+}
+
 /**
  * A username is only ever interpolated into a DN, never into a filter, but a
  * DN is still a structured string: a comma or an equals sign would let the
@@ -55,6 +82,15 @@ export async function authenticate(username: string, password: string): Promise<
     throw unauthorized('Invalid username or password');
   }
 
+  // Outside production there is no directory to bind against. Signing in as
+  // DEV_USER with any password is what lets the iOS app be pointed at
+  // `npm run dev`; assertProductionConfig() keeps this branch out of a real
+  // install.
+  if (!config.isProd) {
+    if (username !== config.auth.devUser) throw unauthorized('Invalid username or password');
+    return { username, displayName: username, email: `${username}@localhost`, isAdmin: config.auth.devAdmin };
+  }
+
   const dn = config.auth.ldapDnTemplate.replace('{username}', username);
   const client = new Client({ url: config.auth.ldapUrl, timeout: 5000, connectTimeout: 5000 });
 
@@ -71,15 +107,13 @@ export async function authenticate(username: string, password: string): Promise<
     const { searchEntries } = await client.search(dn, {
       scope: 'base',
       filter: '(objectClass=*)',
-      attributes: ['uid', 'cn', 'displayName', 'mail', 'memberOf'],
+      attributes: USER_ATTRIBUTES,
     });
 
     const entry = searchEntries[0];
     if (!entry) throw unauthorized('Invalid username or password');
 
-    const memberOf = attr(entry, 'memberOf').map(cnOf);
-    const isAdmin = memberOf.includes(config.auth.adminGroup.toLowerCase());
-    const hasPermission = memberOf.includes(config.auth.requiredPermission.toLowerCase());
+    const { isAdmin, hasPermission, displayName, email } = describe(entry, username);
 
     if (!hasPermission && !isAdmin) {
       throw forbidden(
@@ -89,12 +123,7 @@ export async function authenticate(username: string, password: string): Promise<
       );
     }
 
-    return {
-      username,
-      displayName: attr(entry, 'displayName')[0] ?? attr(entry, 'cn')[0] ?? username,
-      email: attr(entry, 'mail')[0],
-      isAdmin,
-    };
+    return { username, displayName, email, isAdmin };
   } finally {
     await client.unbind().catch(() => undefined);
   }
@@ -118,6 +147,13 @@ export type PermissionCheck = 'granted' | 'revoked' | 'unknown';
 
 export async function stillPermitted(username: string): Promise<PermissionCheck> {
   if (!isPlausibleUsername(username)) return 'revoked';
+  if (!config.isProd) return 'granted';
+
+  // Administrators are let in by login whether or not they hold the app
+  // permission; the re-check has to agree, or an admin is signed out at the
+  // first refresh by the very rule that admitted them.
+  const profile = await lookup(username);
+  if (profile?.isAdmin || profile?.hasPermission) return 'granted';
 
   const client = new Client({ url: config.auth.ldapUrl, timeout: 5000, connectTimeout: 5000 });
   try {
@@ -144,6 +180,51 @@ export async function stillPermitted(username: string): Promise<PermissionCheck>
   } catch (err) {
     console.warn(`[cloud/ldap] permission re-check unavailable for ${username}:`, err);
     return 'unknown';
+  } finally {
+    await client.unbind().catch(() => undefined);
+  }
+}
+
+export interface LdapProfile extends LdapUser {
+  hasPermission: boolean;
+  /** False when the directory would not show this account's memberships. */
+  membershipKnown: boolean;
+}
+
+/**
+ * Read an account's entry without its password — for the sign-in routes that
+ * already trust the identity (the portal, a passkey, a refresh token) but
+ * still need to know who the person is and whether they are an admin.
+ *
+ * YunoHost's directory allows anonymous reads of user entries from localhost.
+ * Null means it could not be read; callers fall back to what they already
+ * know rather than failing the sign-in.
+ */
+export async function lookup(username: string): Promise<LdapProfile | null> {
+  if (!isPlausibleUsername(username)) return null;
+  if (!config.isProd) {
+    return {
+      username,
+      displayName: username,
+      email: `${username}@localhost`,
+      isAdmin: config.auth.devAdmin,
+      hasPermission: true,
+      membershipKnown: true,
+    };
+  }
+
+  const client = new Client({ url: config.auth.ldapUrl, timeout: 5000, connectTimeout: 5000 });
+  try {
+    const { searchEntries } = await client.search(config.auth.ldapDnTemplate.replace('{username}', username), {
+      scope: 'base',
+      filter: '(objectClass=*)',
+      attributes: USER_ATTRIBUTES,
+    });
+    const entry = searchEntries[0];
+    if (!entry) return null;
+    return { username, ...describe(entry, username) };
+  } catch {
+    return null;
   } finally {
     await client.unbind().catch(() => undefined);
   }

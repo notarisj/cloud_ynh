@@ -43,6 +43,9 @@ ynh_app_setting_set --key=enable_passkeys --value="$enable_passkeys"
 
 [ -z "$user_quota" ] && user_quota=0
 [ -z "$max_upload" ] && max_upload=20
+# The panel's number fields can hand back "5.0"; shell arithmetic only takes integers.
+user_quota=${user_quota%%.*}
+max_upload=${max_upload%%.*}
 user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
 max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
 

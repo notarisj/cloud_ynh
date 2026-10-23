@@ -6,7 +6,7 @@ import { pipeline } from 'stream/promises';
 import { Transform, type Readable } from 'stream';
 import { config } from '../config';
 import { badRequest, conflict, forbidden, fromNodeError, notFound, tooLarge } from '../lib/errors';
-import { assertWritable, parentVPath, resolveVPath } from '../lib/vpath';
+import { assertWritable, parentVPath, resolveVPath, type ResolvedPath } from '../lib/vpath';
 import * as storage from './storage';
 import type { ConflictPolicy, FileEntry } from './storage';
 
@@ -135,17 +135,16 @@ export async function begin(
 
   const parent = parentVPath(resolved.vpath);
   if (parent === null) throw badRequest('Upload target must be inside a folder', 'invalid_path');
-  const parentResolved = await resolveVPath(username, parent, { mustExist: true });
-  assertWritable(parentResolved);
-  const parentStats = await fs.stat(parentResolved.abs).catch((e) => {
-    throw fromNodeError(e);
-  });
-  if (!parentStats.isDirectory()) throw badRequest('Upload target must be inside a folder', 'not_directory');
+  // A dropped folder arrives as "Photos/Trip/beach.jpg" with nothing yet on
+  // the server under "Photos". Creating the chain here is what lets both web
+  // clients and the Files app upload a folder without a round trip per level.
+  await ensureFolder(username, parent);
 
   const policy = options.conflict ?? 'rename';
-  if (policy === 'fail') {
-    const exists = await fs.lstat(resolved.abs).then(() => true).catch(() => false);
-    if (exists) throw conflict('A file with that name already exists', 'exists');
+  const existing = await fs.lstat(resolved.abs).catch(() => null);
+  if (existing && policy === 'fail') throw conflict('A file with that name already exists', 'exists');
+  if (existing?.isDirectory() && policy === 'replace') {
+    throw conflict('A folder with that name already exists', 'exists');
   }
 
   const id = crypto.randomUUID();
@@ -256,17 +255,25 @@ export async function finish(username: string, id: string): Promise<FileEntry> {
   }
 
   const resolved = await resolveVPath(username, meta.target);
+  assertWritable(resolved);
   const parent = parentVPath(resolved.vpath);
   if (parent === null) throw badRequest('Invalid upload target', 'invalid_path');
-  const parentResolved = await resolveVPath(username, parent, { mustExist: true });
+  // The folder may have been removed while the upload was in flight.
+  const parentResolved = await ensureFolder(username, parent);
 
   let finalName = path.basename(resolved.abs);
-  const exists = await fs.lstat(resolved.abs).then(() => true).catch(() => false);
+  const existing = await fs.lstat(resolved.abs).catch(() => null);
+  let replaced = false;
 
-  if (exists) {
+  if (existing) {
     if (meta.conflict === 'fail') throw conflict('A file with that name already exists', 'exists');
-    if (meta.conflict === 'rename') finalName = await storage.uniqueName(parentResolved.abs, finalName);
-    // 'replace' falls through: the rename below overwrites in place.
+    if (meta.conflict === 'rename' || existing.isDirectory()) {
+      // Never let a file land on top of a folder, whatever was asked for.
+      finalName = await storage.uniqueName(parentResolved.abs, finalName);
+    } else {
+      // 'replace': the rename below overwrites in place.
+      replaced = true;
+    }
   }
 
   const destination = path.join(parentResolved.abs, finalName);
@@ -291,8 +298,36 @@ export async function finish(username: string, id: string): Promise<FileEntry> {
   await fs.rm(sessionDir(id), { recursive: true, force: true }).catch(() => undefined);
   queues.delete(id);
 
-  storage.adjustUsage(meta.owner ?? username, meta.size);
+  // A replacement frees the old bytes as well as adding new ones; working
+  // that out is a rescan, not arithmetic.
+  if (replaced) storage.invalidateUsage(meta.owner ?? username);
+  else storage.adjustUsage(meta.owner ?? username, meta.size);
   return storage.stat(username, `${parent}/${finalName}`);
+}
+
+/**
+ * Make sure a folder exists, creating any missing levels, and return it
+ * resolved. The path is resolved and checked for write access first, which
+ * proves its nearest existing ancestor is inside the caller's tree, so the
+ * levels created beneath that ancestor are too.
+ */
+async function ensureFolder(username: string, vpath: string): Promise<ResolvedPath> {
+  const resolved = await resolveVPath(username, vpath);
+  assertWritable(resolved);
+
+  const stats = await fs.stat(resolved.abs).catch(() => null);
+  if (stats) {
+    if (!stats.isDirectory()) throw badRequest('Upload target must be inside a folder', 'not_directory');
+    return resolved;
+  }
+
+  try {
+    await fs.mkdir(resolved.abs, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    throw fromNodeError(err);
+  }
+  // Re-resolve now that it exists, so a symlink raced into place is caught.
+  return resolveVPath(username, vpath, { mustExist: true });
 }
 
 export async function discard(username: string, id: string): Promise<void> {

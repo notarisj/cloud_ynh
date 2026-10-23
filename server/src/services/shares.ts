@@ -202,6 +202,16 @@ export function share(owner: string, rel: string, name: string): Promise<ShareRe
       throw conflict(`Already shared as part of “${enclosing.slug}”`, 'already_shared');
     }
 
+    // And the other way round: publishing a folder that already holds a
+    // published item would show those bytes twice as well.
+    const enclosed = records.find((record) => record.owner === owner && record.rel.startsWith(rel + '/'));
+    if (enclosed) {
+      throw conflict(
+        `Something inside is already shared as “${enclosed.slug}”. Stop sharing it first.`,
+        'contains_shared',
+      );
+    }
+
     const record: ShareRecord = {
       id: crypto.randomUUID(),
       owner,

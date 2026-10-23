@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { config } from '../config';
 import { wrap } from '../lib/async';
 import { unauthorized } from '../lib/errors';
+import * as ldap from '../services/ldap';
 import { requireProxySecret, ssoIdentity } from '../middleware/auth';
 import * as passkeys from '../services/passkeys';
 import * as storage from '../services/storage';
@@ -55,7 +56,15 @@ ssoRouter.get(
 
     await storage.ensureUserRoot(username);
 
-    const user: tokens.Principal = { username, displayName, email, isAdmin: false };
+    // SSOwat vouches for who this is, not for what they may do: the admin flag
+    // comes from the directory, the same as for every other way in.
+    const profile = await ldap.lookup(username);
+    const user: tokens.Principal = {
+      username,
+      displayName: profile?.displayName || displayName,
+      email: profile?.email ?? email,
+      isAdmin: profile?.isAdmin ?? false,
+    };
     const sid = `sso:${username}`;
 
     res.json({

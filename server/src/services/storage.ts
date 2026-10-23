@@ -482,6 +482,9 @@ export async function copy(
   await assertQuota(to.owner, size);
 
   const destination = await prepareDestination(to.abs, policy);
+  // Whatever the copy replaced was deleted, and anything published from it
+  // goes the same way — exactly as a move over it would.
+  if (policy === 'replace') await shares.forgetUnder(to.owner, siblingRel(ownerRelOf(to), path.basename(destination)));
 
   try {
     await fs.cp(from.abs, destination, { recursive: true, force: true, preserveTimestamps: true });
@@ -489,7 +492,7 @@ export async function copy(
     throw fromNodeError(err);
   }
 
-  invalidateUsage(username);
+  invalidateUsage(to.owner);
   return stat(username, toVirtual(to, destination));
 }
 
@@ -563,6 +566,9 @@ export async function search(
 
   // Set while walking a shared subtree, so a hit can say who published it.
   let owner: string | null = null;
+  // The caller's own published items, so a hit in their files carries the
+  // same "shared" badge a listing of its folder would.
+  const published = shares.sharedRelsOf(username);
 
   async function walk(absDir: string, vDir: string, depth: number): Promise<void> {
     if (results.length >= limit || depth > 24 || Date.now() > DEADLINE || visited > MAX_VISITED) return;
@@ -583,6 +589,12 @@ export async function search(
           if (owner !== null) {
             entry.sharedBy = owner;
             if (owner !== username) entry.readOnly = true;
+          } else {
+            const record = published.get(childV.replace(/^\/me\//, ''));
+            if (record) {
+              entry.shared = true;
+              entry.sharedAs = `/shared/${record.slug}`;
+            }
           }
           results.push(entry);
         }

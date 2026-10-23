@@ -1,3 +1,4 @@
+import fs from 'fs/promises';
 import { Router } from 'express';
 import { wrap } from '../lib/async';
 import { badRequest, forbidden } from '../lib/errors';
@@ -116,19 +117,16 @@ filesRouter.get(
   '/shares',
   wrap(async (req, res) => {
     const user = principal(req);
-    res.json({
-      shares: shares
-        .all()
-        .filter((record) => record.owner === user.username)
-        .map((record) => ({
-          id: record.id,
-          path: `/me/${record.rel}`,
-          sharedAs: `/shared/${record.slug}`,
-          name: record.slug,
-          sharedAt: record.sharedAt,
-        })),
-      enabled: shares.enabled(),
-    });
+    const own = shares.all().filter((record) => record.owner === user.username);
+    const summaries = [];
+    for (const record of own) {
+      // A record whose file vanished behind the app's back is left out until
+      // the daily sweep removes it, the same as in the Shared listing.
+      const stats = await fs.stat(shares.absOf(record)).catch(() => null);
+      if (stats) summaries.push(summarise(record, stats.isDirectory()));
+    }
+    summaries.sort((a, b) => b.sharedAt - a.sharedAt);
+    res.json({ shares: summaries, enabled: shares.enabled() });
   }),
 );
 
@@ -149,13 +147,7 @@ filesRouter.post(
     const record = await shares.share(user.username, parsed.rel, entry.name);
 
     res.status(201).json({
-      share: {
-        id: record.id,
-        path: `/me/${record.rel}`,
-        sharedAs: `/shared/${record.slug}`,
-        name: record.slug,
-        sharedAt: record.sharedAt,
-      },
+      share: summarise(record, entry.isDir),
       entry: await storage.stat(user.username, parsed.vpath),
     });
   }),
@@ -193,6 +185,17 @@ filesRouter.delete(
     res.status(204).end();
   }),
 );
+
+function summarise(record: shares.ShareRecord, isDir: boolean) {
+  return {
+    id: record.id,
+    path: `/me/${record.rel}`,
+    sharedAs: `/shared/${record.slug}`,
+    name: record.slug,
+    sharedAt: record.sharedAt,
+    isDir,
+  };
+}
 
 //=================================================
 // Mutations

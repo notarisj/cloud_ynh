@@ -49,11 +49,31 @@ function readHash(): { view: View; path: string; query: string } {
   const hash = window.location.hash.replace(/^#/, '');
   if (hash === 'trash') return { view: 'trash', path: '/me', query: '' };
   if (hash.startsWith('search=')) {
-    return { view: 'search', path: '/me', query: decodeURIComponent(hash.slice(7)) };
+    return { view: 'search', path: '/me', query: safeDecode(hash.slice(7)) };
   }
-  const path = hash.startsWith('/') ? decodeURI(hash) : '/me';
+  const path = hash.startsWith('/') ? hash.split('/').map(safeDecode).join('/') : '/me';
   return { view: 'browse', path, query: '' };
 }
+
+/**
+ * Each segment is encoded on its own: encodeURI would leave "#" and "?" in a
+ * folder name alone, and the address bar would then cut the path short.
+ */
+function pathHash(path: string): string {
+  return '#' + path.split('/').map(encodeURIComponent).join('/');
+}
+
+/** A hand-edited or truncated hash must not take the whole app down. */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** Renew a read ticket this long before it lapses. */
+const TICKET_MARGIN_MS = 60_000;
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -190,7 +210,7 @@ export function App() {
   // Keep the address bar in step with the current location.
   useEffect(() => {
     const hash =
-      view === 'trash' ? '#trash' : view === 'search' ? `#search=${encodeURIComponent(query)}` : `#${encodeURI(path)}`;
+      view === 'trash' ? '#trash' : view === 'search' ? `#search=${encodeURIComponent(query)}` : pathHash(path);
     if (window.location.hash !== hash) window.history.replaceState(null, '', hash);
   }, [view, path, query]);
 
@@ -206,6 +226,33 @@ export function App() {
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
+
+  // Thumbnails, previews and download links carry a read ticket that lasts a
+  // quarter of an hour. A page left open longer would quietly stop loading
+  // images, so the ticket is renewed shortly before it runs out.
+  const ticketScope = view === 'search' ? '/' : (listing?.entry.path ?? null);
+  const ticketToken = view === 'search' ? searchResults?.ticket : listing?.ticket.token;
+  const ticketLifetime = view === 'search' ? 15 * 60 : (listing?.ticket.expiresIn ?? 15 * 60);
+
+  useEffect(() => {
+    if (!ticketScope || !ticketToken) return;
+    const delay = Math.max(ticketLifetime * 1000 - TICKET_MARGIN_MS, 30_000);
+    const timer = window.setTimeout(() => {
+      api
+        .ticket(ticketScope)
+        .then((fresh) => {
+          if (ticketScope === '/') {
+            setSearchResults((current) => (current ? { ...current, ticket: fresh.token } : current));
+          } else {
+            setListing((current) =>
+              current && current.entry.path === ticketScope ? { ...current, ticket: fresh } : current,
+            );
+          }
+        })
+        .catch(() => undefined);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [ticketScope, ticketToken, ticketLifetime]);
 
   const refreshUsage = useCallback(() => {
     api
@@ -233,6 +280,8 @@ export function App() {
   // Shared is a view of what other people published, so nothing can be written
   // into it. The server is the authority; this is what the toolbar reads.
   const writable = view === 'browse' && (listing?.writable ?? path.startsWith('/me'));
+  // An admin can turn sharing off; then there is no Shared root to offer.
+  const sharingEnabled = session?.roots.some((root) => root.id === 'shared') ?? false;
 
   const open = useCallback(
     (entry: FileEntry) => {
@@ -472,7 +521,7 @@ export function App() {
 
     if (entry.shared && !entry.readOnly) {
       actions.push({ id: 'unshare', label: 'Stop Sharing', icon: 'shared', separatorBefore: true });
-    } else if (mine) {
+    } else if (mine && sharingEnabled) {
       actions.push({ id: 'share', label: 'Share with Everyone', icon: 'shared', separatorBefore: true });
     }
 
@@ -497,7 +546,7 @@ export function App() {
     }
 
     return actions;
-  }, [menu, selected, clipboard, writable]);
+  }, [menu, selected, clipboard, writable, sharingEnabled]);
 
   const targets = () => (selected.length > 0 ? selected : menu?.entry ? [menu.entry] : []);
 
@@ -539,7 +588,13 @@ export function App() {
   }
 
   if (signedOut || expired) {
-    return <SignIn expired={expired} onSignedIn={() => window.location.reload()} />;
+    return (
+      <SignIn
+        expired={expired}
+        portalDisabled={api.portalSignInDisabled()}
+        onSignedIn={() => window.location.reload()}
+      />
+    );
   }
 
   if (!session) {
@@ -783,6 +838,7 @@ export function App() {
         <SelectionBar
           selected={selected}
           writable={writable && selected.every((entry) => !entry.readOnly && !entry.sharedBy)}
+          sharingEnabled={sharingEnabled}
           onDownload={() => download(selected)}
           onShare={() => void doShare(selected)}
           onUnshare={() => void doUnshare(selected)}

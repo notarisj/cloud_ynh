@@ -21,6 +21,12 @@ ynh_config_change_url_nginx
 # base path is baked into the build — so both have to be redone.
 ynh_script_progression "Updating configuration..."
 
+# The settings still hold the old location until this script succeeds, and
+# both the .env and the SPA's asset base are rendered from $domain and $path —
+# so they are pointed at the new ones explicitly.
+domain="$new_domain"
+path="$new_path"
+
 proxy_secret=$(ynh_app_setting_get --key=proxy_secret)
 jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
 
@@ -29,6 +35,9 @@ jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
 [ -z "$enable_passkeys" ]   && enable_passkeys="true"
 [ -z "$user_quota" ] && user_quota=0
 [ -z "$max_upload" ] && max_upload=20
+# The panel's number fields can hand back "5.0"; shell arithmetic only takes integers.
+user_quota=${user_quota%%.*}
+max_upload=${max_upload%%.*}
 user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
 max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
 
@@ -45,10 +54,13 @@ fi
 #=================================================
 # REBUILD THE SPA FOR THE NEW BASE PATH
 #=================================================
-ynh_script_progression "Rebuilding web interface for $path..."
-pushd "$install_dir" >/dev/null
-    VITE_APP_PATH="$(cloud_base_path)" npm run build 2>&1
-popd >/dev/null
+# Puts the app's Node.js back on PATH; the build below needs npm.
+ynh_nodejs_install --nodejs_version="$nodejs_version"
+
+# The install pruned the build tools once it was done with them, so a plain
+# `npm run build` here has no Vite to run. cloud_build reinstalls them, builds
+# for the new base path, and prunes again.
+cloud_build
 
 cloud_fix_permissions
 

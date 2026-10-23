@@ -436,7 +436,6 @@ export interface PasskeySummary {
 export interface PasskeyListInfo {
   passkeys: PasskeySummary[];
   ssoDisabled: boolean;
-  storeFile: string;
 }
 
 export async function list(username: string): Promise<PasskeyListInfo> {
@@ -455,7 +454,6 @@ export async function list(username: string): Promise<PasskeyListInfo> {
   return {
     passkeys,
     ssoDisabled: file?.ssoDisabled ?? false,
-    storeFile: storeFile(username),
   };
 }
 
@@ -510,6 +508,10 @@ export async function remove(username: string, id: string): Promise<void> {
     if (remaining.length === file.credentials.length) throw notFound('No such passkey', 'no_passkey');
 
     file.credentials = remaining;
+    // Portal sign-in was turned off on the strength of having a passkey.
+    // Removing the last one would leave the account with no way in from a
+    // browser at all, so the portal comes back with it.
+    if (remaining.length === 0) file.ssoDisabled = false;
     await write(file);
   });
 }

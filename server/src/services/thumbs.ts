@@ -6,7 +6,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import sharp from 'sharp';
 import { config } from '../config';
-import { badRequest, notFound } from '../lib/errors';
+import { badRequest, HttpError, notFound } from '../lib/errors';
 import { previewKind } from '../lib/mime';
 
 const run = promisify(execFile);
@@ -105,7 +105,12 @@ export async function thumbnailFor(
     await fs.rename(temp, cached);
   } catch (err) {
     await fs.rm(temp, { force: true }).catch(() => undefined);
-    throw err;
+    if (err instanceof HttpError) throw err;
+    // A format the decoder does not support (HEIC without libheif), a
+    // truncated video, a damaged PDF: the file simply has no thumbnail, and
+    // the clients draw its icon. It is not a server fault worth a 500.
+    console.warn(`[cloud] no thumbnail for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    throw notFound('No thumbnail could be made for this file', 'no_thumbnail');
   }
 
   scheduleSweep();

@@ -33,7 +33,20 @@ interface StoredToken {
   createdAt: number;
   lastUsedAt: number;
   expiresAt: number;
+  /** Who the session belongs to, so a refresh can answer with more than a username. */
+  principal?: Omit<Principal, 'username'>;
+  /**
+   * The token this one replaced, still honoured for a moment after the
+   * rotation. Two processes holding the same token — the iOS app and its
+   * Files extension, or two browser tabs resuming at once — would otherwise
+   * race, and whichever lost would sign the account out.
+   */
+  previousHash?: string;
+  previousValidUntil?: number;
 }
+
+/** How long a just-rotated refresh token keeps working. */
+const ROTATION_GRACE_MS = 60 * 1000;
 
 const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
@@ -157,6 +170,7 @@ export async function issueTokenPair(user: Principal, device: string): Promise<T
       id: sid,
       hash: sha256(refreshToken),
       device: device.slice(0, 120),
+      principal: { displayName: user.displayName, email: user.email, isAdmin: user.isAdmin },
       createdAt: now,
       lastUsedAt: now,
       expiresAt: now + config.auth.refreshTtl * 1000,
@@ -182,28 +196,58 @@ export async function issueTokenPair(user: Principal, device: string): Promise<T
 export async function rotateRefreshToken(
   username: string,
   refreshToken: string,
-): Promise<{ sid: string; newRefreshToken: string; device: string }> {
+): Promise<{ sid: string; newRefreshToken: string; device: string; principal: Principal }> {
   const hash = sha256(refreshToken);
 
   return serialise(username, async () => {
     const tokens = await readStore(username);
-    const index = tokens.findIndex((t) => hashesMatch(t.hash, hash));
+    const now = Date.now();
+    let index = tokens.findIndex((t) => hashesMatch(t.hash, hash));
+    if (index < 0) {
+      index = tokens.findIndex(
+        (t) => t.previousHash !== undefined && (t.previousValidUntil ?? 0) > now && hashesMatch(t.previousHash, hash),
+      );
+    }
 
     const existing = index >= 0 ? tokens[index] : undefined;
     if (!existing) throw unauthorized('Refresh token is not valid', 'refresh_invalid');
 
     const newRefreshToken = crypto.randomBytes(48).toString('base64url');
-    const now = Date.now();
 
     tokens[index] = {
       ...existing,
       hash: sha256(newRefreshToken),
+      // The token being replaced stays usable for a moment, so whoever else
+      // holds it can still trade it in rather than being signed out.
+      previousHash: existing.hash,
+      previousValidUntil: now + ROTATION_GRACE_MS,
       lastUsedAt: now,
       expiresAt: now + config.auth.refreshTtl * 1000,
     };
     await writeStore(username, tokens);
 
-    return { sid: existing.id, newRefreshToken, device: existing.device };
+    return {
+      sid: existing.id,
+      newRefreshToken,
+      device: existing.device,
+      principal: {
+        username,
+        displayName: existing.principal?.displayName ?? username,
+        email: existing.principal?.email,
+        isAdmin: existing.principal?.isAdmin ?? false,
+      },
+    };
+  });
+}
+
+/** Record what is now known about the account on one of its sessions. */
+export async function updatePrincipal(username: string, sid: string, principal: Principal): Promise<void> {
+  await serialise(username, async () => {
+    const tokens = await readStore(username);
+    const token = tokens.find((t) => t.id === sid);
+    if (!token) return;
+    token.principal = { displayName: principal.displayName, email: principal.email, isAdmin: principal.isAdmin };
+    await writeStore(username, tokens);
   });
 }
 
@@ -211,7 +255,7 @@ export async function revokeRefreshToken(username: string, refreshToken: string)
   const hash = sha256(refreshToken);
   await serialise(username, async () => {
     const tokens = await readStore(username);
-    await writeStore(username, tokens.filter((t) => t.hash !== hash));
+    await writeStore(username, tokens.filter((t) => t.hash !== hash && t.previousHash !== hash));
   });
 }
 

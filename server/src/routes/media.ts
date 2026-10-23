@@ -182,7 +182,17 @@ mediaRouter.get(
       throw badRequest('That file type cannot be previewed inline', 'no_preview');
     }
 
-    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    // Everything is locked down; images, video and audio are sandboxed too.
+    // A PDF cannot be: browsers refuse to run their PDF viewer inside a
+    // sandboxed document and show a "blocked" page instead. It is still safe
+    // to serve unsandboxed — the type is fixed to application/pdf and nosniff
+    // stops a browser from reading the bytes as anything else.
+    res.setHeader(
+      'Content-Security-Policy',
+      kind === 'pdf'
+        ? "default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline'; frame-ancestors 'self'"
+        : "default-src 'none'; sandbox",
+    );
     streamFile(req, res, resolved.abs, name, stats.size, `${stats.ino}-${stats.size}-${stats.mtimeMs}`, true);
   }),
 );

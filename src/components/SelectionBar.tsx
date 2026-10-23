@@ -6,6 +6,8 @@ interface SelectionBarProps {
   selected: FileEntry[];
   /** False in Shared and in search results, where there is nothing to write to. */
   writable: boolean;
+  /** False when the server has sharing turned off. */
+  sharingEnabled: boolean;
   onDownload: () => void;
   onShare: () => void;
   onUnshare: () => void;
@@ -25,7 +27,7 @@ interface SelectionBarProps {
  * selected, which is the question people actually have before they hit Delete.
  */
 export function SelectionBar({
-  selected, writable, onDownload, onShare, onUnshare, onMove, onCopy, onRename, onDelete, onClear,
+  selected, writable, sharingEnabled, onDownload, onShare, onUnshare, onMove, onCopy, onRename, onDelete, onClear,
 }: SelectionBarProps) {
   if (selected.length === 0) return null;
 
@@ -60,7 +62,7 @@ export function SelectionBar({
           title={files.length === 0 ? 'Folders cannot be downloaded' : undefined}
         />
 
-        {canShare && writable && <Action icon="shared" label="Share" onClick={onShare} />}
+        {canShare && writable && sharingEnabled && <Action icon="shared" label="Share" onClick={onShare} />}
         {canUnshare && <Action icon="shared" label="Stop sharing" onClick={onUnshare} active />}
 
         <Action icon="copy" label="Copy to…" onClick={onCopy} />

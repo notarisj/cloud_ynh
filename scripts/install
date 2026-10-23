@@ -22,6 +22,9 @@ ynh_app_setting_set --key=jwt_secret --value="$jwt_secret"
 [ "$enable_thumbnails" = "1" ] && enable_thumbnails="true" || enable_thumbnails="false"
 [ "$enable_passkeys"   = "1" ] && enable_passkeys="true"   || enable_passkeys="false"
 
+# The panel's number fields can hand back "5.0"; shell arithmetic only takes integers.
+user_quota=${user_quota%%.*}
+max_upload=${max_upload%%.*}
 user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
 max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
 

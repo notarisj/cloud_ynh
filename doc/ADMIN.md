@@ -89,6 +89,12 @@ yunohost app config set cloud main.features.enable_passkeys -v false
 Existing credentials are not deleted; they simply stop being offered, and start
 working again if the switch is turned back on.
 
+A user with a passkey can also choose **Passkeys only** in Settings, which stops
+the portal from signing them in to this app in a browser. They can turn it back
+on from the same place, and removing their last passkey turns it back on by
+itself, so nobody can lock themselves out this way. The iOS app keeps signing
+in with the account password either way.
+
 ## Thumbnails
 
 Images use `libvips` (bundled with the app), videos use `ffmpeg`, PDFs use

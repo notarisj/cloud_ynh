@@ -25,10 +25,53 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many sign-in attempts. Try again in a few minutes.', code: 'rate_limited' },
 });
 
+/**
+ * The account as the directory describes it now, falling back to what the
+ * session already knew. Every route that signs someone in without a password
+ * goes through here, so the admin flag and the display name survive a refresh
+ * instead of being reset to "not an admin, called by their username".
+ */
+async function currentPrincipal(known: tokens.Principal): Promise<tokens.Principal> {
+  const profile = await ldap.lookup(known.username);
+  if (!profile) return known;
+  return {
+    username: known.username,
+    displayName: profile.displayName || known.displayName,
+    email: profile.email ?? known.email,
+    // Only a directory that showed the memberships gets to change the flag.
+    isAdmin: profile.membershipKnown ? profile.isAdmin : known.isAdmin,
+  };
+}
+
 function deviceLabel(raw: unknown, fallbackAgent: string | undefined): string {
   if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim().slice(0, 120);
   return (fallbackAgent ?? 'Unknown device').slice(0, 120);
 }
+
+/**
+ * Version of the API contract the clients are written against. Bumped when a
+ * response changes in a way a client may want to detect; additions alone do
+ * not need it.
+ */
+export const API_VERSION = 2;
+
+//=================================================
+// GET /api/v1/auth/config
+//=================================================
+// What a client needs to know before anybody has signed in: whether to offer
+// a passkey button, and which version of the API it is talking to. Nothing
+// here is secret.
+
+authRouter.get('/config', (_req, res) => {
+  res.json({
+    name: 'Cloud',
+    version: API_VERSION,
+    appPath: config.appPath,
+    passkeys: passkeys.enabled(),
+    sharing: config.storage.sharingEnabled,
+    limits: { maxUploadBytes: config.storage.maxUploadBytes, chunkSize: 8 * 1024 * 1024 },
+  });
+});
 
 //=================================================
 // POST /api/v1/auth/login
@@ -52,7 +95,7 @@ authRouter.post(
     res.json({
       ...pair,
       roots: storage.rootsFor(user.username),
-      server: { name: 'Cloud', version: 1, appPath: config.appPath },
+      server: { name: 'Cloud', version: API_VERSION, appPath: config.appPath },
     });
   }),
 );
@@ -82,11 +125,8 @@ authRouter.post(
       throw unauthorized('Access to this app has been withdrawn', 'no_permission');
     }
 
-    const user: tokens.Principal = {
-      username,
-      displayName: username,
-      isAdmin: false,
-    };
+    const user = await currentPrincipal(rotated.principal);
+    await tokens.updatePrincipal(username, rotated.sid, user);
 
     res.json({
       accessToken: tokens.signAccessToken(user, rotated.sid),
@@ -284,11 +324,8 @@ authRouter.post(
       throw unauthorized('Access to this app has been withdrawn', 'no_permission');
     }
 
-    const user: tokens.Principal = {
-      username: cookie.username,
-      displayName: cookie.username,
-      isAdmin: false,
-    };
+    const user = await currentPrincipal(rotated.principal);
+    await tokens.updatePrincipal(cookie.username, rotated.sid, user);
 
     setSessionCookie(res, cookie.username, rotated.newRefreshToken);
     res.json(await sessionPayload(user, rotated.sid));
@@ -407,11 +444,11 @@ authRouter.post(
       throw unauthorized('Access to this app has been withdrawn', 'no_permission');
     }
 
-    const user: tokens.Principal = {
+    const user = await currentPrincipal({
       username: verified.username,
       displayName: verified.displayName,
       isAdmin: false,
-    };
+    });
 
     await storage.ensureUserRoot(user.username);
     const pair = await tokens.issueTokenPair(
@@ -430,7 +467,7 @@ authRouter.post(
     res.json({
       ...pair,
       roots: storage.rootsFor(user.username),
-      server: { name: 'Cloud', version: 1, appPath: config.appPath },
+      server: { name: 'Cloud', version: API_VERSION, appPath: config.appPath },
     });
   }),
 );

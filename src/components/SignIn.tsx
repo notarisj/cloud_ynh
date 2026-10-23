@@ -6,6 +6,8 @@ import { portalUrl } from '../lib/api';
 interface SignInProps {
   /** Shown when a session ended rather than never having existed. */
   expired: boolean;
+  /** The portal answered that this account only signs in here with a passkey. */
+  portalDisabled?: boolean;
   onSignedIn: () => void;
 }
 
@@ -22,8 +24,11 @@ interface SignInProps {
  * the browser offers whichever passkeys it holds for this site — which also
  * means this screen cannot be used to find out whether an account exists.
  */
-export function SignIn({ expired, onSignedIn }: SignInProps) {
+export function SignIn({ expired, portalDisabled = false, onSignedIn }: SignInProps) {
   const [supported, setSupported] = useState<boolean | null>(null);
+  // Whether the server offers passkeys at all. Unknown until it answers, and
+  // assumed on for a server too old to say.
+  const [serverAllows, setServerAllows] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,10 +37,15 @@ export function SignIn({ expired, onSignedIn }: SignInProps) {
     void api.passkeysUsable().then((usable) => {
       if (!cancelled) setSupported(usable);
     });
+    void api.serverConfig().then((server) => {
+      if (!cancelled && server) setServerAllows(server.passkeys);
+    });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const canUsePasskey = supported === true && serverAllows;
 
   const signIn = () => {
     setBusy(true);
@@ -60,7 +70,13 @@ export function SignIn({ expired, onSignedIn }: SignInProps) {
       <div className="signin__card">
         <Icon name="cloud" size={44} weight={1.5} style={{ color: 'var(--accent)' }} />
         <h1>Cloud</h1>
-        <p>{expired ? 'Your session has expired.' : 'Sign in to reach your files.'}</p>
+        <p>
+          {portalDisabled
+            ? 'This account signs in to Cloud with a passkey only.'
+            : expired
+              ? 'Your session has expired.'
+              : 'Sign in to reach your files.'}
+        </p>
 
         {error && (
           <div className="banner" role="alert" style={{ margin: '4px 0 0' }}>
@@ -69,22 +85,30 @@ export function SignIn({ expired, onSignedIn }: SignInProps) {
           </div>
         )}
 
-        {supported && (
+        {canUsePasskey && (
           <button type="button" className="button button--primary signin__button" onClick={signIn} disabled={busy}>
             {busy ? <span className="spinner spinner--light" /> : <Icon name="check" size={16} weight={2.2} />}
             {busy ? 'Waiting for your passkey…' : 'Sign in with a passkey'}
           </button>
         )}
 
-        <a className={`button signin__button${supported ? '' : ' button--primary'}`} href={portalUrl}>
-          <Icon name="home" size={16} />
-          Sign in with the portal
-        </a>
+        {/* Sending someone to a portal that will only send them back here
+            is a loop, not a way in. */}
+        {!portalDisabled && (
+          <a className={`button signin__button${canUsePasskey ? '' : ' button--primary'}`} href={portalUrl}>
+            <Icon name="home" size={16} />
+            Sign in with the portal
+          </a>
+        )}
 
         <p className="signin__hint">
-          {supported === false
-            ? 'This browser cannot use passkeys, so the portal is the way in.'
-            : 'A passkey signs you in with the fingerprint, face or PIN you already use on this device. You can add one from Settings once you are in.'}
+          {!serverAllows
+            ? 'Sign in through the YunoHost portal.'
+            : supported === false
+              ? portalDisabled
+                ? 'This browser cannot use passkeys. Open Cloud in a browser that can, or ask an administrator for help.'
+                : 'This browser cannot use passkeys, so the portal is the way in.'
+              : 'A passkey signs you in with the fingerprint, face or PIN you already use on this device. You can add one from Settings once you are in.'}
         </p>
 
         {/* Someone can land here because the API was restarting when the page

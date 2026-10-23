@@ -111,12 +111,14 @@ Everything is under `<domain><path>/api/v1`. Send `Authorization: Bearer <token>
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/auth/config` | Server name, API version, passkeys and sharing switches — no session needed |
 | `POST` | `/auth/login` | `{username, password, device}` → token pair |
 | `POST` | `/auth/refresh` | `{username, refreshToken}` → rotated pair |
 | `POST` | `/auth/logout` | Revoke one refresh token |
 | `GET` | `/auth/me` | Account, roots, usage, limits |
 | `GET` | `/auth/sessions` | Signed-in devices |
 | `DELETE` | `/auth/sessions/:id` | Revoke one device |
+| `DELETE` | `/auth/sessions` | Revoke every device |
 | `POST` | `/auth/web/session` | Resume a passkey session from its cookie |
 | `POST` | `/auth/web/logout` | End it and clear the cookie |
 | `POST` | `/auth/passkeys/challenge` | Start a sign-in ceremony |
@@ -126,6 +128,7 @@ Everything is under `<domain><path>/api/v1`. Send `Authorization: Bearer <token>
 | `GET` | `/auth/passkeys` | Registered passkeys |
 | `PATCH` | `/auth/passkeys/:id` | Rename one |
 | `DELETE` | `/auth/passkeys/:id` | Remove one |
+| `POST` | `/auth/passkeys/sso/disable` | `{disabled}` — passkeys only in the browser, or the portal again |
 
 ### Files
 
@@ -139,9 +142,9 @@ Everything is under `<domain><path>/api/v1`. Send `Authorization: Bearer <token>
 | `POST` | `/files/move` | `{from, to, conflict}` |
 | `POST` | `/files/copy` | `{from, to, conflict}` |
 | `POST` | `/files/ticket` | `{path}` → read ticket for a subtree |
-| `GET` | `/files/shares` | What you have published |
+| `GET` | `/files/shares` | What you have published, newest first |
 | `POST` | `/files/share` | `{path}` → publish one of your items |
-| `DELETE` | `/files/share?path=` | Stop publishing it |
+| `DELETE` | `/files/share?path=` or `?id=` | Stop publishing it |
 | `DELETE` | `/files/?path=&permanent=` | To Recently Deleted, or for good |
 
 A listing also carries `writable`, and each entry may carry `shared`,
@@ -165,7 +168,7 @@ ticket is read-only, scoped to one subtree, and lasts fifteen minutes.
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/upload/simple?path=` | Multipart, one request, up to 64 MB |
-| `POST` | `/upload` | `{path, size, mtime, conflict}` → session |
+| `POST` | `/upload` | `{path, size, mtime, conflict}` → session; missing folders on the way are created |
 | `GET` | `/upload/:id` | Which chunks are still missing |
 | `PUT` | `/upload/:id/chunk/:index` | Raw bytes of one chunk |
 | `POST` | `/upload/:id/complete` | Finalise |
@@ -179,7 +182,17 @@ ticket is read-only, scoped to one subtree, and lasts fifteen minutes.
 | `POST` | `/trash/:id/restore` | Put back |
 | `DELETE` | `/trash/:id` | Delete for good |
 | `DELETE` | `/trash/` | Empty |
-| `GET` | `/sync/changes?root=&since=` | Entries modified since an anchor |
+| `GET` | `/sync/changes?root=&since=&limit=` | Entries modified since an anchor, oldest first |
+| `GET` | `/sync/changes?root=&since=&newest=1` | The most recent changes, newest first |
+
+The change feed is a cursor. Pass the returned `anchor` back as `since`; while
+`truncated` is true there is more to read. The anchor is a fractional
+millisecond timestamp and should be sent back unrounded.
+
+Refresh tokens rotate on every use. The token just replaced keeps working for
+sixty seconds, so two processes sharing one session — the iOS app and its
+Files extension, or two browser tabs — cannot sign each other out by
+refreshing at the same moment.
 
 Paths are virtual: `/me/Documents/report.pdf`, `/shared/Holiday Photos/beach.jpg`.
 The first segment names a root, so a device that signs in as somebody else sees
@@ -196,7 +209,8 @@ npm run dev          # Vite on :5173, API on :3010
 ```
 
 Outside production the API skips LDAP and attributes every request to
-`DEV_USER`. That is also why the server refuses to start in production without
+`DEV_USER`; `POST /auth/login` accepts `DEV_USER` with any password, which is
+what lets the iOS app be pointed at a development server. That is also why the server refuses to start in production without
 `PROXY_SECRET` and `JWT_SECRET` — those are what turn the shortcut off.
 
 ```bash

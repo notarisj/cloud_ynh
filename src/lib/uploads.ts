@@ -94,10 +94,19 @@ class UploadManager {
   }
 
   private conflictPolicies = new Map<string, ConflictPolicy>();
+  /**
+   * The server session behind each task that has one. Kept after a failure,
+   * so a retry asks the server what it is still missing and sends only that.
+   */
+  private sessions = new Map<string, string>();
 
   cancel(id: string): void {
     this.controllers.get(id)?.abort();
     this.controllers.delete(id);
+    // Cancelling means "not this file": the server stops holding its chunks.
+    const session = this.sessions.get(id);
+    if (session) void api.abortUpload(session);
+    this.sessions.delete(id);
     this.update(id, { state: 'cancelled' });
   }
 
@@ -110,6 +119,15 @@ class UploadManager {
 
   /** Drop finished and cancelled entries from the tray. */
   clearFinished(): void {
+    const dropped = this.tasks.filter((t) => t.state !== 'queued' && t.state !== 'uploading');
+    for (const task of dropped) {
+      // A failed upload nobody is going to retry should not sit on the server
+      // for a day holding its chunks.
+      const session = this.sessions.get(task.id);
+      if (session && task.state === 'failed') void api.abortUpload(session);
+      this.sessions.delete(task.id);
+      this.conflictPolicies.delete(task.id);
+    }
     this.tasks = this.tasks.filter((t) => t.state === 'queued' || t.state === 'uploading');
     this.emit();
   }
@@ -143,16 +161,13 @@ class UploadManager {
     const controller = new AbortController();
     this.controllers.set(id, controller);
 
-    let sessionId: string | null = null;
-
     try {
-      const session = await api.beginUpload(
-        task.target,
-        task.file.size,
-        task.file.lastModified,
-        this.conflictPolicies.get(id) ?? 'rename',
-      );
-      sessionId = session.id;
+      const session = await this.openSession(id, task);
+      if (controller.signal.aborted) {
+        void api.abortUpload(session.id);
+        this.sessions.delete(id);
+        return;
+      }
 
       // A zero-byte file has no chunks; the session is completed straight away.
       if (session.chunkCount > 0) {
@@ -160,11 +175,11 @@ class UploadManager {
       }
 
       const entry = await api.completeUpload(session.id);
+      this.sessions.delete(id);
       this.update(id, { state: 'done', sent: task.file.size, entry });
     } catch (error) {
       if (controller.signal.aborted) {
-        if (sessionId) void api.abortUpload(sessionId);
-        this.update(id, { state: 'cancelled' });
+        // cancel() has already told the server and updated the row.
         return;
       }
       const message = error instanceof Error ? error.message : 'Upload failed';
@@ -176,6 +191,31 @@ class UploadManager {
     }
   }
 
+  /**
+   * The session to upload into: the one a previous attempt left behind, if
+   * the server still has it, or a new one.
+   */
+  private async openSession(id: string, task: UploadTask): Promise<api.UploadSession> {
+    const previous = this.sessions.get(id);
+    if (previous) {
+      try {
+        return await api.uploadStatus(previous);
+      } catch {
+        // Expired or swept: start again below.
+        this.sessions.delete(id);
+      }
+    }
+
+    const session = await api.beginUpload(
+      task.target,
+      task.file.size,
+      task.file.lastModified,
+      this.conflictPolicies.get(id) ?? 'rename',
+    );
+    this.sessions.set(id, session.id);
+    return session;
+  }
+
   private async sendChunks(
     id: string,
     session: api.UploadSession,
@@ -183,7 +223,13 @@ class UploadManager {
     signal: AbortSignal,
   ): Promise<void> {
     const pending = [...session.missing];
-    let confirmed = session.received.length * session.chunkSize;
+    // What the server already holds, counted exactly: the last chunk is
+    // usually shorter than the rest.
+    let confirmed = session.received.reduce(
+      (total, index) => total + Math.min(session.chunkSize, file.size - index * session.chunkSize),
+      0,
+    );
+    this.update(id, { sent: confirmed });
 
     const worker = async (): Promise<void> => {
       for (;;) {
@@ -195,15 +241,20 @@ class UploadManager {
         const end = Math.min(start + session.chunkSize, file.size);
         const blob = file.slice(start, end);
 
-        // One retry per chunk absorbs the transient failures — a dropped
-        // connection on a train, a proxy hiccup — without a user-visible error.
-        try {
-          await api.putChunk(session.id, index, blob, signal);
-        } catch (error) {
-          if (signal.aborted) return;
-          await new Promise((resolve) => setTimeout(resolve, 1200));
-          if (signal.aborted) return;
-          await api.putChunk(session.id, index, blob, signal);
+        // A few retries, backing off, absorb the transient failures — a
+        // dropped connection on a train, a proxy hiccup — without a visible
+        // error. A refusal from the server (quota, a 4xx) is not retried.
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            await api.putChunk(session.id, index, blob, signal);
+            break;
+          } catch (error) {
+            if (signal.aborted) return;
+            const refused = error instanceof api.ApiError && error.status >= 400 && error.status < 500;
+            if (refused || attempt >= 3) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+            if (signal.aborted) return;
+          }
         }
 
         confirmed += end - start;

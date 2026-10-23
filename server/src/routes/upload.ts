@@ -5,11 +5,10 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import os from 'os';
 import { config } from '../config';
 import { wrap } from '../lib/async';
 import { badRequest, conflict, fromNodeError, tooLarge } from '../lib/errors';
-import { assertWritable, joinVPath, resolveVPath } from '../lib/vpath';
+import { assertValidName, assertWritable, joinVPath, resolveVPath } from '../lib/vpath';
 import { ensureRoot, principal, requireAuth } from '../middleware/auth';
 import * as storage from '../services/storage';
 import * as uploads from '../services/uploads';
@@ -67,16 +66,21 @@ uploadRouter.post(
 
       let handled = false;
       // Written to a temp file first so a truncated upload never appears in the
-      // user's folder as a plausible-looking short file.
-      const temp = path.join(os.tmpdir(), `cloud-up-${crypto.randomUUID()}`);
+      // user's folder as a plausible-looking short file. The staging area is
+      // on the data volume, not /tmp: that keeps a large upload off the system
+      // disk, and lets finishing be a rename instead of a second copy.
+      const temp = path.join(config.storage.uploadsDir, `simple-${crypto.randomUUID()}`);
 
       parser.on('file', (_field, stream, info) => {
         handled = true;
-        const filename = path.basename(info.filename || 'upload');
+        const filename = path.basename(info.filename || 'upload').trim() || 'upload';
 
         void (async () => {
           try {
+            // The body is drained before the name is judged: refusing early
+            // would leave the parser waiting on a stream nobody reads.
             await pipeline(stream, fs.createWriteStream(temp, { mode: 0o600 }));
+            assertValidName(filename);
 
             if (stream.truncated) {
               throw tooLarge(
@@ -90,18 +94,29 @@ uploadRouter.post(
 
             let finalName = filename;
             const target = path.join(dirResolved.abs, finalName);
-            const exists = await fsp.lstat(target).then(() => true).catch(() => false);
+            const existing = await fsp.lstat(target).catch(() => null);
+            let replaced = false;
 
-            if (exists) {
+            if (existing) {
               if (policy === 'fail') throw conflict('A file with that name already exists', 'exists');
-              if (policy === 'rename') finalName = await storage.uniqueName(dirResolved.abs, finalName);
+              if (policy === 'rename' || existing.isDirectory()) {
+                finalName = await storage.uniqueName(dirResolved.abs, finalName);
+              } else {
+                replaced = true;
+              }
             }
 
             const destination = path.join(dirResolved.abs, finalName);
-            await fsp.copyFile(temp, destination);
+            try {
+              await fsp.rename(temp, destination);
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw fromNodeError(err);
+              await fsp.copyFile(temp, destination);
+            }
             await fsp.chmod(destination, 0o600).catch(() => undefined);
 
-            storage.adjustUsage(dirResolved.owner, stats.size);
+            if (replaced) storage.invalidateUsage(dirResolved.owner);
+            else storage.adjustUsage(dirResolved.owner, stats.size);
             resolve(await storage.stat(user.username, joinVPath(dirResolved.vpath, finalName)));
           } catch (err) {
             reject(err);

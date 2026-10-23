@@ -89,6 +89,16 @@ export interface ShareSummary {
   sharedAs: string;
   name: string;
   sharedAt: number;
+  /** Absent from servers before API version 2. */
+  isDir?: boolean;
+}
+
+/** What the server says about itself before anybody signs in. */
+export interface ServerConfig {
+  name: string;
+  version: number;
+  passkeys: boolean;
+  sharing: boolean;
 }
 
 export interface PasskeySummary {
@@ -143,6 +153,14 @@ export class SessionExpiredError extends ApiError {
     this.name = 'SessionExpiredError';
   }
 }
+
+/**
+ * Set when the portal answered that this account has turned portal sign-in
+ * off for the app. The sign-in screen says so, instead of sending the person
+ * back to a portal that will only bounce them here again.
+ */
+let portalRefused = false;
+export const portalSignInDisabled = () => portalRefused;
 
 export const portalUrl = '/yunohost/sso/';
 
@@ -199,7 +217,11 @@ async function portalSession(): Promise<Session> {
     throw new ServerUnreachableError();
   }
 
-  if (response.status === 401 || response.status === 403) throw new SessionExpiredError();
+  if (response.status === 401 || response.status === 403) {
+    const body = (await response.json().catch(() => null)) as { code?: string } | null;
+    portalRefused = body?.code === 'sso_disabled';
+    throw new SessionExpiredError();
+  }
   if (response.status >= 500) {
     throw new ServerUnreachableError('The server could not start a session.');
   }
@@ -355,6 +377,25 @@ export function remove(path: string, permanent = false): Promise<unknown> {
   return request(`/files/?${params}`, { method: 'DELETE' });
 }
 
+/**
+ * A fresh read ticket for a subtree. Listings carry one already; this is for
+ * a page that has stayed open longer than the ticket lasts.
+ */
+export function ticket(path: string): Promise<{ token: string; expiresIn: number }> {
+  return request('/files/ticket', jsonBody({ path }));
+}
+
+/** Server facts that do not need a session. Null when the server is too old to say. */
+export async function serverConfig(): Promise<ServerConfig | null> {
+  try {
+    const response = await fetch(`${API}/auth/config`, { headers: { accept: 'application/json' } });
+    if (!response.ok) return null;
+    return (await response.json()) as ServerConfig;
+  } catch {
+    return null;
+  }
+}
+
 export function usage(): Promise<Usage> {
   return request<{ usage: Usage }>('/auth/me').then((r) => r.usage);
 }
@@ -460,6 +501,7 @@ export async function putChunk(
   index: number,
   blob: Blob,
   signal?: AbortSignal,
+  retry = true,
 ): Promise<UploadSession> {
   const response = await fetch(`${API}/upload/${id}/chunk/${index}`, {
     method: 'PUT',
@@ -467,8 +509,19 @@ export async function putChunk(
     body: blob,
     signal,
   });
+  // A long upload easily outlives one access token; renew it and resend
+  // this chunk, as request() does for everything else.
+  if (response.status === 401 && retry) {
+    await openSession(true);
+    return putChunk(id, index, blob, signal, false);
+  }
   if (!response.ok) throw await parseError(response);
   return ((await response.json()) as { upload: UploadSession }).upload;
+}
+
+/** Where a session stands — which chunks the server still wants. */
+export function uploadStatus(id: string): Promise<UploadSession> {
+  return request<{ upload: UploadSession }>(`/upload/${id}`).then((r) => r.upload);
 }
 
 export function completeUpload(id: string): Promise<FileEntry> {
@@ -486,7 +539,7 @@ export function abortUpload(id: string): Promise<unknown> {
 // cryptography, the server does the verification, and this module only carries
 // the two messages between them.
 
-export function listPasskeys(): Promise<{ passkeys: PasskeySummary[]; enabled: boolean; ssoDisabled: boolean; storeFile: string }> {
+export function listPasskeys(): Promise<{ passkeys: PasskeySummary[]; enabled: boolean; ssoDisabled: boolean }> {
   return request('/auth/passkeys');
 }
 

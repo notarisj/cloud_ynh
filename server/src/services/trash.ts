@@ -143,12 +143,16 @@ export async function restore(username: string, id: string): Promise<FileEntry> 
   }
 
   // The folder it came from may itself have been deleted since. Recreate the
-  // chain rather than refusing the restore.
-  const parent = parentVPath(item.originalPath);
-  if (parent === null) throw badRequest('Cannot restore to a root', 'invalid_path');
-  await ensureFolderChain(username, parent);
-
-  const parentResolved = await resolveVPath(username, parent, { mustExist: true });
+  // chain rather than refusing the restore — and if even that is impossible
+  // (a file now sits where a folder was), put it back at the top of My Files
+  // rather than leaving it stuck in the trash.
+  let parent = parentVPath(item.originalPath);
+  if (parent === null || !(parent === '/me' || parent.startsWith('/me/'))) parent = '/me';
+  let parentResolved = await restorableFolder(username, parent);
+  if (!parentResolved) {
+    parent = '/me';
+    parentResolved = await resolveVPath(username, parent, { mustExist: true });
+  }
   const finalName = await uniqueName(parentResolved.abs, item.name);
   const destination = path.join(parentResolved.abs, finalName);
 
@@ -170,13 +174,21 @@ export async function restore(username: string, id: string): Promise<FileEntry> 
   return storage.stat(username, joinVPath(parent, finalName));
 }
 
-async function ensureFolderChain(username: string, vpath: string): Promise<void> {
-  const segments = vpath.split('/').filter(Boolean);
-  // segments[0] is the root, which always exists.
-  for (let i = 2; i <= segments.length; i += 1) {
-    const partial = '/' + segments.slice(0, i).join('/');
-    const resolved = await resolveVPath(username, partial);
-    await fs.mkdir(resolved.abs, { recursive: true, mode: 0o700 }).catch(() => undefined);
+/** The folder to restore into, created if need be, or null if it cannot be. */
+async function restorableFolder(username: string, vpath: string) {
+  try {
+    const segments = vpath.split('/').filter(Boolean);
+    // segments[0] is the root, which always exists.
+    for (let i = 2; i <= segments.length; i += 1) {
+      const partial = '/' + segments.slice(0, i).join('/');
+      const resolved = await resolveVPath(username, partial);
+      await fs.mkdir(resolved.abs, { recursive: true, mode: 0o700 }).catch(() => undefined);
+    }
+    const resolved = await resolveVPath(username, vpath, { mustExist: true });
+    const stats = await fs.stat(resolved.abs);
+    return stats.isDirectory() ? resolved : null;
+  } catch {
+    return null;
   }
 }
 
@@ -192,11 +204,16 @@ export async function purge(username: string, id: string): Promise<void> {
 }
 
 export async function empty(username: string): Promise<number> {
-  const items = await readIndex(username);
+  // Read and rewrite the index inside one turn of the queue, so an item
+  // trashed while this runs is neither lost from the index nor deleted.
+  const items = await serialise(username, async () => {
+    const current = await readIndex(username);
+    await writeIndex(username, []);
+    return current;
+  });
   for (const item of items) {
     await fs.rm(path.join(userTrashDir(username), item.id), { recursive: true, force: true });
   }
-  await serialise(username, () => writeIndex(username, []));
   invalidateUsage(username);
   return items.length;
 }
@@ -222,24 +239,31 @@ export async function purgeExpired(): Promise<void> {
     const dirStats = await fs.lstat(dir).catch(() => null);
     if (!dirStats?.isDirectory()) continue;
 
-    const items = await readIndex(username);
-    const keep = items.filter((i) => i.deletedAt >= cutoff);
+    // Decide and rewrite in one turn of the queue, so an item trashed while
+    // the sweep runs is not dropped from the index.
+    const expired = await serialise(username, async () => {
+      const items = await readIndex(username);
+      const gone = items.filter((i) => i.deletedAt < cutoff);
+      if (gone.length > 0) await writeIndex(username, items.filter((i) => i.deletedAt >= cutoff));
+      return gone;
+    });
 
-    for (const expired of items.filter((i) => i.deletedAt < cutoff)) {
-      await fs.rm(path.join(dir, expired.id), { recursive: true, force: true }).catch(() => undefined);
+    for (const item of expired) {
+      await fs.rm(path.join(dir, item.id), { recursive: true, force: true }).catch(() => undefined);
     }
+    if (expired.length > 0) invalidateUsage(username);
 
-    if (keep.length !== items.length) {
-      await serialise(username, () => writeIndex(username, keep));
-      invalidateUsage(username);
-    }
-
-    // Orphaned item directories.
-    const known = new Set(keep.map((i) => i.id));
+    // Orphaned item directories. Only old ones: an item being trashed right
+    // now has its directory before it has an index entry, and sweeping it in
+    // that gap would delete somebody's file outright.
+    const known = new Set((await readIndex(username)).map((i) => i.id));
     const present = await fs.readdir(dir).catch(() => [] as string[]);
+    const orphanCutoff = Date.now() - 3600 * 1000;
     for (const name of present) {
       if (name === 'index.json' || name.startsWith('index.json.')) continue;
       if (known.has(name)) continue;
+      const stats = await fs.lstat(path.join(dir, name)).catch(() => null);
+      if (!stats || stats.mtimeMs > orphanCutoff) continue;
       await fs.rm(path.join(dir, name), { recursive: true, force: true }).catch(() => undefined);
     }
   }

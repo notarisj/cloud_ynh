@@ -369,20 +369,36 @@ function Thumbnail({
   }, [wanted, visible]);
 
   // A changed etag means new bytes, so it belongs in the URL to bust the cache.
-  const source = wanted && visible && ticket ? thumbUrl(ticket, entry.path, size <= 32 ? 128 : 256) : null;
+  const current = wanted && visible && ticket
+    ? `${thumbUrl(ticket, entry.path, size <= 32 ? 128 : 256)}&v=${entry.etag}`
+    : null;
+
+  // The URL an image loaded with is kept even after the ticket is renewed:
+  // a new ticket is a new URL, and swapping it in would download every
+  // thumbnail on screen again for nothing. Only a failed load moves on.
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    if (current && (source === null || !source.includes(`&v=${entry.etag}`))) setSource(current);
+  }, [current, source, entry.etag]);
+
+  const onError = () => {
+    if (current && current !== source) setSource(current);
+    else setFailed(true);
+  };
+
   const { name, tint } = iconForEntry(entry);
 
   return (
     <span ref={holder} style={{ display: 'grid', placeItems: 'center', width: size, height: size }}>
-      {source ? (
+      {source && !failed ? (
         <img
-          src={`${source}&v=${entry.etag}`}
+          src={source}
           alt=""
           loading="lazy"
           decoding="async"
           width={size}
           height={size}
-          onError={() => setFailed(true)}
+          onError={onError}
         />
       ) : (
         <Icon name={name} size={iconSize} weight={1.4} style={{ color: tint }} />

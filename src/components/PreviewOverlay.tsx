@@ -26,8 +26,15 @@ interface PreviewOverlayProps {
  * themselves to their content, the same declaration resolves against nothing
  * and a tall photo is simply cut off at the bottom of the window.
  */
-export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose }: PreviewOverlayProps) {
+export function PreviewOverlay({ entries, index, ticket: latestTicket, onIndexChange, onClose }: PreviewOverlayProps) {
   const entry = entries[index];
+
+  // The ticket a file was opened with stays its ticket. The page renews
+  // tickets in the background, and handing a playing video a new URL would
+  // start it again from the beginning.
+  const [opened, setOpened] = useState({ index, ticket: latestTicket });
+  if (opened.index !== index) setOpened({ index, ticket: latestTicket });
+  const ticket = opened.index === index ? opened.ticket : latestTicket;
   const [zoomed, setZoomed] = useState(false);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
 
@@ -105,7 +112,7 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
 
         <a
           className="iconbutton"
-          href={downloadUrl(ticket, entry.path)}
+          href={downloadUrl(latestTicket, entry.path)}
           download={entry.name}
           aria-label={`Download ${entry.name}`}
         >
@@ -137,7 +144,15 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
           </button>
         )}
 
-        <PreviewBody entry={entry} ticket={ticket} zoomed={zoomed} onToggleZoom={() => setZoomed((v) => !v)} />
+        <PreviewBody
+          entry={entry}
+          ticket={ticket}
+          zoomed={zoomed}
+          onToggleZoom={() => setZoomed((v) => !v)}
+          onTicketExpired={() => {
+            if (latestTicket !== opened.ticket) setOpened({ index, ticket: latestTicket });
+          }}
+        />
 
         {index < entries.length - 1 && (
           <button
@@ -155,14 +170,35 @@ export function PreviewOverlay({ entries, index, ticket, onIndexChange, onClose 
 }
 
 function PreviewBody({
-  entry, ticket, zoomed, onToggleZoom,
+  entry, ticket, zoomed, onToggleZoom, onTicketExpired,
 }: {
   entry: FileEntry;
   ticket: string;
   zoomed: boolean;
   onToggleZoom: () => void;
+  /** A request failed, most likely because the ticket ran out mid-playback. */
+  onTicketExpired: () => void;
 }) {
   const source = previewUrl(ticket, entry.path);
+  const media = useRef<HTMLMediaElement | null>(null);
+  // Where playback was when the URL had to change, so it resumes there.
+  const resumeAt = useRef<number | null>(null);
+
+  const mediaEvents = {
+    ref: (element: HTMLMediaElement | null) => {
+      media.current = element;
+    },
+    onError: () => {
+      resumeAt.current = media.current?.currentTime ?? null;
+      onTicketExpired();
+    },
+    onLoadedMetadata: () => {
+      if (media.current && resumeAt.current !== null) {
+        media.current.currentTime = resumeAt.current;
+        resumeAt.current = null;
+      }
+    },
+  };
 
   switch (entry.preview) {
     case 'image':
@@ -176,18 +212,20 @@ function PreviewBody({
       );
     case 'video':
       // eslint-disable-next-line jsx-a11y/media-has-caption
-      return <video src={source} className="preview__media" controls autoPlay playsInline />;
+      return <video src={source} className="preview__media" controls autoPlay playsInline {...mediaEvents} />;
     case 'audio':
       return (
         <div className="preview__unsupported">
           <Icon name="music" size={64} weight={1.2} />
           <div style={{ fontSize: 14 }}>{entry.name}</div>
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <audio src={source} controls autoPlay style={{ width: 'min(420px, 80vw)' }} />
+          <audio src={source} controls autoPlay style={{ width: 'min(420px, 80vw)' }} {...mediaEvents} />
         </div>
       );
     case 'pdf':
-      return <iframe src={source} title={entry.name} sandbox="" />;
+      // Not sandboxed: no browser runs its PDF viewer in a sandboxed frame.
+      // The response itself is locked down by the server's CSP instead.
+      return <iframe src={source} title={entry.name} />;
     case 'text':
       return <TextPreview entry={entry} />;
     default:
