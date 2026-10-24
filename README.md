@@ -37,6 +37,10 @@ Packaged for YunoHost 12, following the same conventions as `wg-man_ynh`.
 - **A REST API** for native clients, authenticated against YunoHost's LDAP.
 - **SSO for the browser.** The portal session is exchanged for a token; nobody
   has to type a password twice.
+- **Quick sign-in.** A browser shows a QR code; the iOS app, already signed in,
+  scans it, asks for the number the browser shows and for Face ID, and the
+  browser is in — no password typed, for any account, passkey-only ones and
+  accounts made in Cloud included.
 
 ## Install
 
@@ -149,6 +153,11 @@ Everything is under `<domain><path>/api/v1`. Send `Authorization: Bearer <token>
 | `PATCH` | `/auth/passkeys/:id` | Rename one |
 | `DELETE` | `/auth/passkeys/:id` | Remove one |
 | `POST` | `/auth/passkeys/sso/disable` | `{disabled}` — passkeys only in the browser, or the portal again |
+| `POST` | `/auth/quick/start` | Browser: start a quick sign-in → `{id, secret, code, url}`; show `url` as a QR code and `code` as text |
+| `POST` | `/auth/quick/:id/poll` | Browser: `{secret}` → `{status}`; on `approved`, also the session, with the session cookie set |
+| `POST` | `/auth/quick/:id/scan` | Phone (signed in): who is asking, and three numbers to choose from |
+| `POST` | `/auth/quick/:id/approve` | Phone: `{code}` — the number the browser shows; a wrong one ends the request |
+| `POST` | `/auth/quick/:id/deny` | Phone: turn the browser away |
 
 ### Files
 
@@ -178,7 +187,10 @@ offer before the user tries it.
 |---|---|---|
 | `GET` | `/users` | People on the server — names for everyone, full records for admins |
 | `POST` | `/users` | Admin: `{username, password, isAdmin}` → a Cloud-only account |
+| `PATCH` | `/users/:username` | Admin: `{disabled?, isAdmin?, password?}` — turn any account off or on, change its Cloud admin rank, reset a Cloud-only account's password |
+| `POST` | `/users/:username/signout` | Admin: sign an account out of every device |
 | `DELETE` | `/users/:username` | Admin: remove a Cloud-only account |
+| `POST` | `/auth/password` | A Cloud-only account changes its own password: `{currentPassword, newPassword}` |
 
 ### Bytes
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
+import { QuickSignInDialog } from './QuickSignIn';
 import * as api from '../lib/api';
 import { portalUrl } from '../lib/api';
 
@@ -32,6 +33,7 @@ interface SignInProps {
  */
 export function SignIn({ expired, portalDisabled = false, reason, onSignedIn }: SignInProps) {
   const [supported, setSupported] = useState<boolean | null>(null);
+  const [quick, setQuick] = useState(false);
   // Whether the server offers passkeys at all. Unknown until it answers, and
   // assumed on for a server too old to say.
   const [serverAllows, setServerAllows] = useState(true);
@@ -99,6 +101,13 @@ export function SignIn({ expired, portalDisabled = false, reason, onSignedIn }: 
           </button>
         )}
 
+        {/* Works for every account, passkey-only ones and accounts made in
+            Cloud included: the phone vouches for it. */}
+        <button type="button" className="button signin__button" onClick={() => setQuick(true)}>
+          <Icon name="cloud" size={16} />
+          Sign in with your iPhone
+        </button>
+
         {/* Sending someone to a portal that will only send them back here
             is a loop, not a way in. */}
         {!portalDisabled && (
@@ -107,6 +116,8 @@ export function SignIn({ expired, portalDisabled = false, reason, onSignedIn }: 
             Sign in with the portal
           </a>
         )}
+
+        {quick && <QuickSignInDialog onSignedIn={onSignedIn} onClose={() => setQuick(false)} />}
 
         <p className="signin__hint">
           {!serverAllows

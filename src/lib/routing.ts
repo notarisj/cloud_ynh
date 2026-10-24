@@ -7,7 +7,15 @@
  * linkable, and is completely indifferent to the mount point.
  */
 
-export type View = 'browse' | 'trash' | 'search' | 'recents';
+export type View = 'browse' | 'trash' | 'search' | 'recents' | 'shares' | 'links';
+
+/** Views that are a place of their own, with a fixed hash rather than a path. */
+const PLACES: Partial<Record<View, string>> = {
+  trash: 'trash',
+  recents: 'recents',
+  shares: 'shared-by-me',
+  links: 'links',
+};
 
 export interface Location {
   view: View;
@@ -17,8 +25,9 @@ export interface Location {
 
 export function readHash(hash: string = window.location.hash): Location {
   const value = hash.replace(/^#/, '');
-  if (value === 'trash') return { view: 'trash', path: '/me', query: '' };
-  if (value === 'recents') return { view: 'recents', path: '/me', query: '' };
+  for (const [view, hash] of Object.entries(PLACES)) {
+    if (value === hash) return { view: view as View, path: '/me', query: '' };
+  }
   if (value.startsWith('search=')) {
     return { view: 'search', path: '/me', query: safeDecode(value.slice(7)) };
   }
@@ -28,7 +37,8 @@ export function readHash(hash: string = window.location.hash): Location {
 
 /** The hash for a location — the inverse of readHash. */
 export function locationHash({ view, path, query }: Location): string {
-  if (view === 'trash' || view === 'recents') return `#${view}`;
+  const place = PLACES[view];
+  if (place) return `#${place}`;
   if (view === 'search') return `#search=${encodeURIComponent(query)}`;
   return pathHash(path);
 }

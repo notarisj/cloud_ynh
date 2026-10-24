@@ -3,7 +3,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
-import { unauthorized } from '../lib/errors';
+import { forbidden, unauthorized } from '../lib/errors';
+import * as policy from './policy';
 
 export interface Principal {
   username: string;
@@ -68,7 +69,19 @@ function hashesMatch(a: string, b: string): boolean {
 // Access tokens
 //=================================================
 
+/**
+ * Refuse an account an administrator has blocked. Called wherever a token is
+ * minted and on every authenticated request, so blocking takes effect at once
+ * and no way in — password, passkey, portal or refresh — is left open.
+ */
+export function assertAllowed(username: string): void {
+  if (policy.isDisabled(username)) {
+    throw forbidden('This account has been turned off for Cloud. Ask an administrator.', 'account_disabled');
+  }
+}
+
 export function signAccessToken(user: Principal, sid: string): string {
+  assertAllowed(user.username);
   const claims = {
     sub: user.username,
     name: user.displayName,
@@ -179,7 +192,13 @@ function isStorelessSession(sid: string): boolean {
 }
 
 export async function assertSessionActive(username: string, sid: string): Promise<void> {
-  if (isStorelessSession(sid)) return;
+  // Turning an account off also revokes its sessions, so a device with one
+  // hears "signed out" (401) — which every client already handles by going
+  // back to sign-in — before it would hear "turned off" (403).
+  if (isStorelessSession(sid)) {
+    assertAllowed(username);
+    return;
+  }
 
   let cached = liveSessions.get(username);
   if (!cached || Date.now() - cached.readAt > LIVE_SESSION_TTL_MS) {
@@ -189,12 +208,14 @@ export async function assertSessionActive(username: string, sid: string): Promis
   }
 
   if (!cached.ids.has(sid)) throw unauthorized('This device has been signed out', 'session_revoked');
+  assertAllowed(username);
 }
 
 /** Cap how many live sessions one account can accumulate. */
 const MAX_SESSIONS_PER_USER = 25;
 
 export async function issueTokenPair(user: Principal, device: string): Promise<TokenPair> {
+  assertAllowed(user.username);
   const refreshToken = crypto.randomBytes(48).toString('base64url');
   const sid = crypto.randomUUID();
   const now = Date.now();
@@ -298,6 +319,14 @@ export async function revokeSession(username: string, sid: string): Promise<void
   await serialise(username, async () => {
     const tokens = await readStore(username);
     await writeStore(username, tokens.filter((t) => t.id !== sid));
+  });
+}
+
+/** Sign out every device but the one asking. */
+export async function revokeOtherSessions(username: string, keep: string): Promise<void> {
+  await serialise(username, async () => {
+    const tokens = await readStore(username);
+    await writeStore(username, tokens.filter((t) => t.id === keep));
   });
 }
 

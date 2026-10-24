@@ -21,6 +21,7 @@ export const forbidden   = (msg: string, code = 'forbidden')    => new HttpError
 export const notFound    = (msg = 'Not found', code = 'not_found') => new HttpError(404, code, msg);
 export const conflict    = (msg: string, code = 'conflict')     => new HttpError(409, code, msg);
 export const tooLarge    = (msg: string, code = 'too_large')    => new HttpError(413, code, msg);
+export const tooManyRequests = (msg: string, code = 'rate_limited') => new HttpError(429, code, msg);
 export const insufficientStorage = (msg: string) => new HttpError(507, 'quota_exceeded', msg);
 
 /** Translate the errno codes the fs module throws into the right HTTP status. */

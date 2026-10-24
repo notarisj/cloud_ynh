@@ -19,6 +19,10 @@ interface SidebarProps {
   onDropInto?: (paths: string[], folder: string) => void;
   /** Shown to administrators only. */
   onShowUsers: () => void;
+  /** What you have published: shared items, public links. */
+  onShowPlace: (place: 'shares' | 'links') => void;
+  sharingEnabled: boolean;
+  linksEnabled: boolean;
   onShowSettings: () => void;
   onClose: () => void;
 }
@@ -27,7 +31,7 @@ const ROOT_ICONS: Record<string, 'home' | 'shared'> = { me: 'home', shared: 'sha
 
 export function Sidebar({
   roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onShowRecents, onShowUsers, onShowSettings,
-  onClose, onDropInto,
+  onClose, onDropInto, onShowPlace, sharingEnabled, linksEnabled,
 }: SidebarProps) {
   // An unlimited quota has no meaningful bar, so the meter falls back to the
   // volume's free space — still useful, and honest about what it is showing.
@@ -103,15 +107,42 @@ export function Sidebar({
         <span>Recently Deleted</span>
       </button>
 
-      {user.isAdmin && (
+      {(sharingEnabled || linksEnabled) && <div className="sidebar__section">Sharing</div>}
+      {sharingEnabled && (
         <button
           type="button"
           className="sidebar__item"
-          onClick={onShowUsers}
+          aria-current={view === 'shares'}
+          onClick={() => onShowPlace('shares')}
         >
           <Icon name="shared" size={18} />
-          <span>Users</span>
+          <span>Shared by Me</span>
         </button>
+      )}
+      {linksEnabled && (
+        <button
+          type="button"
+          className="sidebar__item"
+          aria-current={view === 'links'}
+          onClick={() => onShowPlace('links')}
+        >
+          <Icon name="link" size={18} />
+          <span>Public Links</span>
+        </button>
+      )}
+
+      {user.isAdmin && (
+        <>
+          <div className="sidebar__section">Administration</div>
+          <button
+            type="button"
+            className="sidebar__item"
+            onClick={onShowUsers}
+          >
+            <Icon name="shared" size={18} />
+            <span>Users</span>
+          </button>
+        </>
       )}
 
       <div className="sidebar__spacer" />

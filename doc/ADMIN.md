@@ -90,6 +90,33 @@ The accounts live in `.meta/users.json` with scrypt-hashed passwords. Removing
 one signs it out everywhere and forgets its passkeys; its files stay in
 `users/<name>` until you delete them.
 
+### Turning accounts off, and other administration
+
+Every account — YunoHost's as well as Cloud-only ones — can be turned off for
+Cloud from **Users**: it is signed out everywhere at once and refused at every
+way in (password, passkey, portal, the apps) until it is turned back on.
+Nothing changes in YunoHost. The same screen makes an account a Cloud
+administrator or not, signs it out of every device, and shows its storage and
+when it was last active. Cloud-only accounts can also have their password
+reset, and be removed. YunoHost passwords, and admin rank that comes from the
+admins group or **Extra administrators**, stay with YunoHost.
+
+These decisions live in `.meta/user-policy.json`.
+
+### Quick sign-in from the iPhone
+
+The sign-in page offers **Sign in with your iPhone**: it shows a QR code and a
+number. In the iOS app, **Settings › Sign In a Browser** scans the code, shows
+which browser is asking, and asks for that number and Face ID. The browser
+then gets a session of its own, listed under Signed-In Devices.
+
+A code lasts two minutes and works once. Collecting the session needs a secret
+that only the browser that asked holds, so a photo of the code is useless; and
+the number has to be read off the browser that asked, so a code someone sends
+you cannot be used to sign *them* in to your account. Accounts that are turned
+off cannot approve or be signed in. This also works for passkey-only accounts:
+the portal is what they turned off, and this is not the portal.
+
 ### Who sees a share
 
 A share reaches either everyone signed in to the app, or only the people its

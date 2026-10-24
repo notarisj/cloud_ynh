@@ -1618,3 +1618,90 @@
 .form__check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.4; }
 .form__check input { margin-top: 2px; accent-color: var(--accent); }
 .sheet__rowtext strong .pill { margin-left: 6px; }
+
+/*=================================================
+  People
+=================================================*/
+
+.sheet__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: -6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 15px;
+  color: var(--accent);
+}
+.sheet__back:hover { background: var(--bg-hover); }
+
+/* A row that opens something: the whole row is the target, with the
+   disclosure chevron Settings rows have. */
+.sheet__row--link {
+  width: 100%;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+.sheet__row--link:hover { background: var(--bg-hover); }
+.sheet__chevron { flex: none; color: var(--text-tertiary); }
+.sheet__value { margin-left: auto; font-size: 13px; color: var(--text-secondary); }
+.sheet__rowtext strong .pill + .pill { margin-left: 4px; }
+.pill--muted { background: var(--bg-hover); color: var(--text-secondary); }
+
+.person { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
+.person__name { margin: 8px 0 0; font-size: 17px; font-weight: 600; }
+.person__meta { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+
+/* The iOS switch, drawn on a real checkbox so the keyboard, forms and screen
+   readers all treat it as the control it is. */
+.switchrow { cursor: pointer; }
+.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 44px;
+  height: 26px;
+  margin: 0 0 0 auto;
+  border-radius: 13px;
+  background: var(--separator-strong);
+  transition: background 180ms var(--ease);
+  cursor: pointer;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 180ms var(--ease);
+}
+.switch:checked { background: var(--green); }
+.switch:checked::after { transform: translateX(18px); }
+.switch:disabled { opacity: 0.45; cursor: default; }
+.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/*=================================================
+  Quick sign-in
+=================================================*/
+
+.dialog--quick { width: min(380px, 100%); text-align: center; }
+.dialog--quick .dialog__actions { justify-content: center; }
+.quick__code { display: flex; justify-content: center; margin: 4px 0 14px; }
+/* Dark modules on white whatever the theme: a QR code must keep its contrast. */
+.quick__qr {
+  width: 208px;
+  height: 208px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.quick__qr svg { display: block; width: 100%; height: 100%; }
+.quick__qr--empty { display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); }
+.quick__match { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-bottom: 10px; font-size: 13px; color: var(--text-secondary); }
+.quick__match strong { font-size: 34px; font-weight: 600; letter-spacing: 0.04em; color: var(--text); font-variant-numeric: tabular-nums; }
+.dialog p.quick__status { margin: 0 0 16px; font-size: 12.5px; color: var(--text-tertiary); }

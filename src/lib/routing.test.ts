@@ -31,3 +31,12 @@ describe('hash routing', () => {
     }
   });
 });
+
+describe('places of their own', () => {
+  it('round-trips Shared by Me and Public Links', () => {
+    expect(readHash('#shared-by-me').view).toBe('shares');
+    expect(readHash('#links').view).toBe('links');
+    expect(locationHash({ view: 'shares', path: '/me', query: '' })).toBe('#shared-by-me');
+    expect(locationHash({ view: 'links', path: '/me', query: '' })).toBe('#links');
+  });
+});

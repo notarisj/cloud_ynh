@@ -123,6 +123,30 @@ export async function createLocalUser(username: string, password: string, isAdmi
   });
 }
 
+/** Give a local account a new password. */
+export async function setLocalPassword(username: string, password: string): Promise<void> {
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+    throw badRequest(`Use a password of at least ${MIN_PASSWORD_LENGTH} characters`, 'weak_password');
+  }
+  const salt = crypto.randomBytes(16).toString('base64');
+  const hash = await hashPassword(password, salt);
+  return serialise(async () => {
+    const users = load();
+    const user = users.find((u) => u.username === username);
+    if (!user) throw notFound('User not found');
+    await persist(users.map((u) => (u.username === username ? { ...u, passwordHash: hash.toString('base64'), passwordSalt: salt } : u)));
+  });
+}
+
+/** Make a local account an administrator of Cloud, or not. */
+export async function setLocalAdmin(username: string, isAdmin: boolean): Promise<void> {
+  return serialise(async () => {
+    const users = load();
+    if (!users.some((u) => u.username === username)) throw notFound('User not found');
+    await persist(users.map((u) => (u.username === username ? { ...u, isAdmin } : u)));
+  });
+}
+
 export async function deleteLocalUser(username: string): Promise<void> {
   return serialise(async () => {
     const users = load();

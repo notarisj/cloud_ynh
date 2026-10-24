@@ -19,6 +19,7 @@ import { Icon } from './components/Icon';
 import { PreviewOverlay } from './components/PreviewOverlay';
 import { SelectionBar } from './components/SelectionBar';
 import { SettingsPanel } from './components/SettingsPanel';
+import { PublishedView } from './components/PublishedView';
 import { ShareDialog } from './components/ShareDialog';
 import { Sidebar } from './components/Sidebar';
 import { SignIn } from './components/SignIn';
@@ -162,7 +163,9 @@ export function App() {
     setError(null);
 
     try {
-      if (view === 'trash') {
+      if (view === 'shares' || view === 'links') {
+        // These load their own lists.
+      } else if (view === 'trash') {
         setTrash(await api.listTrash());
       } else if (view === 'recents') {
         setSearchResults(await loadRecents(session));
@@ -660,6 +663,14 @@ export function App() {
           setSelection(new Set());
           setSidebarOpen(false);
         }}
+        onShowPlace={(place) => {
+          setView(place);
+          setQuery('');
+          setSelection(new Set());
+          setSidebarOpen(false);
+        }}
+        sharingEnabled={sharingEnabled}
+        linksEnabled={linksEnabled}
         onShowUsers={() => {
           setUsersOpen(true);
           setSidebarOpen(false);
@@ -704,7 +715,15 @@ export function App() {
             />
           ) : (
             <h1 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>
-              {view === 'trash' ? 'Recently Deleted' : view === 'recents' ? 'Recents' : `Results for “${query}”`}
+              {view === 'trash'
+                ? 'Recently Deleted'
+                : view === 'recents'
+                  ? 'Recents'
+                  : view === 'shares'
+                    ? 'Shared by Me'
+                    : view === 'links'
+                      ? 'Public Links'
+                      : `Results for “${query}”`}
             </h1>
           )}
 
@@ -725,8 +744,8 @@ export function App() {
             />
           </label>
 
-          {/* Recently Deleted is a list and nothing else. */}
-          {view !== 'trash' && (
+          {/* Recently Deleted, Shared by Me and Public Links are lists and nothing else. */}
+          {view !== 'trash' && view !== 'shares' && view !== 'links' && (
             <div className="toolbar__group">
               <button
                 type="button"
@@ -813,6 +832,12 @@ export function App() {
 
           {loading ? (
             <div className="centred"><div className="spinner" /></div>
+          ) : view === 'shares' || view === 'links' ? (
+            <PublishedView
+              kind={view}
+              onReveal={navigate}
+              onError={setError}
+            />
           ) : view === 'trash' ? (
             <TrashView
               items={trash?.items ?? []}

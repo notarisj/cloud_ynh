@@ -2,13 +2,14 @@ import { Router, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { config } from '../config';
 import { wrap } from '../lib/async';
-import { badRequest, unauthorized } from '../lib/errors';
+import { badRequest, conflict, unauthorized } from '../lib/errors';
 import { principal, requireAuth } from '../middleware/auth';
 import * as ldap from '../services/ldap';
 import * as passkeys from '../services/passkeys';
 import * as storage from '../services/storage';
 import * as tokens from '../services/tokens';
 import * as users from '../services/users';
+import * as quick from '../services/quickSignIn';
 
 export const authRouter: Router = Router();
 
@@ -177,6 +178,35 @@ authRouter.post(
 );
 
 //=================================================
+// POST /api/v1/auth/password
+//=================================================
+// Accounts created in Cloud change their own password here. YunoHost users
+// change theirs in YunoHost, which owns it.
+
+authRouter.post(
+  '/password',
+  loginLimiter,
+  requireAuth,
+  wrap(async (req, res) => {
+    const user = principal(req);
+    const { currentPassword, newPassword } = req.body ?? {};
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+      throw badRequest('Current and new password are required', 'missing_fields');
+    }
+    if (!users.getLocalUser(user.username)) {
+      throw conflict('YunoHost users change their password in YunoHost.', 'password_from_server');
+    }
+
+    // Proves it is the person, not just their unlocked device.
+    await users.authenticateLocal(user.username, currentPassword);
+    await users.setLocalPassword(user.username, newPassword);
+    // Every other device signs in again with the new password; this one stays.
+    await tokens.revokeOtherSessions(user.username, user.sid);
+    res.status(204).end();
+  }),
+);
+
+//=================================================
 // GET /api/v1/auth/me
 //=================================================
 
@@ -193,6 +223,8 @@ authRouter.get(
         displayName: user.displayName,
         email: user.email,
         isAdmin: user.isAdmin,
+        // An account created in Cloud: it has a password here to change.
+        local: !!users.getLocalUser(user.username),
       },
       roots: storage.rootsFor(user.username),
       usage: await storage.usage(user.username),
@@ -528,5 +560,118 @@ authRouter.post(
       roots: storage.rootsFor(user.username),
       server: { name: 'Cloud', version: API_VERSION, appPath: config.appPath },
     });
+  }),
+);
+
+//=================================================
+// Quick sign-in: a signed-in phone approves a browser
+//=================================================
+// See services/quickSignIn.ts for why it is safe. The browser starts a
+// request and shows its id as a QR code, and a number; the phone scans it,
+// shows who is asking, and approves with that number; the browser, polling
+// with a secret only it holds, is then given a session of its own — listed
+// under Signed-In Devices like any other, and revocable the same way.
+
+const quickStartLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 12,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many sign-in codes. Wait a minute and try again.', code: 'rate_limited' },
+});
+
+const quickPollLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  // A browser asks every second or so for two minutes.
+  limit: 150,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests.', code: 'rate_limited' },
+});
+
+/** "Safari on Mac" from a user agent — what the phone shows about the asker. */
+export function describeBrowser(agent: string | undefined): string {
+  const ua = agent ?? '';
+  const browser = /Edg\//.test(ua) ? 'Edge'
+    : /Firefox\//.test(ua) ? 'Firefox'
+    : /Chrome\//.test(ua) ? 'Chrome'
+    : /Safari\//.test(ua) ? 'Safari'
+    : 'A browser';
+  const platform = /iPhone/.test(ua) ? 'iPhone'
+    : /iPad/.test(ua) ? 'iPad'
+    : /Android/.test(ua) ? 'Android'
+    : /Mac OS X|Macintosh/.test(ua) ? 'Mac'
+    : /Windows/.test(ua) ? 'Windows'
+    : /Linux/.test(ua) ? 'Linux'
+    : null;
+  return platform ? `${browser} on ${platform}` : browser;
+}
+
+authRouter.post(
+  '/quick/start',
+  quickStartLimiter,
+  wrap(async (req, res) => {
+    const started = quick.start(describeBrowser(req.headers['user-agent']), req.ip ?? '');
+    res.status(201).json({
+      ...started,
+      // What the QR code holds. Scanned by the app, it is read for the id; by
+      // the system camera, it opens this app's page that says how to use it.
+      url: `${config.publicUrl}/#quick=${started.id}`,
+    });
+  }),
+);
+
+/** The browser, with its secret: pending, scanned, approved (and signed in), denied or expired. */
+authRouter.post(
+  '/quick/:id/poll',
+  quickPollLimiter,
+  wrap(async (req, res) => {
+    const result = quick.poll(req.params.id ?? '', req.body?.secret);
+    if (result.status !== 'approved' || !result.username) {
+      res.json({ status: result.status });
+      return;
+    }
+
+    // The approving account, as the directory describes it now, with its own
+    // session for this browser. issueTokenPair refuses an account that has
+    // been turned off in the meantime.
+    const local = users.getLocalUser(result.username);
+    const user = await currentPrincipal({
+      username: result.username,
+      displayName: result.username,
+      isAdmin: local?.isAdmin ?? false,
+    });
+    const pair = await tokens.issueTokenPair(user, `${describeBrowser(req.headers['user-agent'])} (quick sign-in)`);
+    setSessionCookie(res, user.username, pair.refreshToken);
+    res.json({ status: 'approved', session: await sessionPayload(user, tokens.verifyAccessToken(pair.accessToken).sid) });
+  }),
+);
+
+/** The phone scanned the code: who is asking, and the numbers to choose from. */
+authRouter.post(
+  '/quick/:id/scan',
+  requireAuth,
+  wrap(async (req, res) => {
+    res.json(quick.scan(req.params.id ?? '', principal(req).username));
+  }),
+);
+
+/** The phone approves, with the number the browser shows. */
+authRouter.post(
+  '/quick/:id/approve',
+  requireAuth,
+  wrap(async (req, res) => {
+    quick.approve(req.params.id ?? '', principal(req).username, req.body?.code);
+    res.status(204).end();
+  }),
+);
+
+/** The phone declines. */
+authRouter.post(
+  '/quick/:id/deny',
+  requireAuth,
+  wrap(async (req, res) => {
+    quick.deny(req.params.id ?? '', principal(req).username);
+    res.status(204).end();
   }),
 );

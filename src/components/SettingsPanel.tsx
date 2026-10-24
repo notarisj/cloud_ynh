@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { ConfirmDialog, PromptDialog, Scrim } from './Dialogs';
 import { Avatar } from './Avatar';
 import { Icon } from './Icon';
-import { formatBytes, formatDate, shareAudience } from '../lib/format';
+import { formatBytes, formatDate } from '../lib/format';
 import * as api from '../lib/api';
-import type { DeviceSession, LinkSummary, PasskeySummary, Session, ShareSummary } from '../lib/api';
+import type { DeviceSession, PasskeySummary, Session } from '../lib/api';
 
 interface SettingsPanelProps {
   session: Session;
@@ -24,8 +24,6 @@ interface SettingsPanelProps {
 export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProps) {
   const [passkeys, setPasskeys] = useState<PasskeySummary[] | null>(null);
   const [ssoDisabled, setSsoDisabled] = useState(false);
-  const [shares, setShares] = useState<ShareSummary[] | null>(null);
-  const [links, setLinks] = useState<LinkSummary[] | null>(null);
   const [rescueCommand, setRescueCommand] = useState('');
   const [confirmingSsoOff, setConfirmingSsoOff] = useState(false);
   const [sessions, setSessions] = useState<DeviceSession[] | null>(null);
@@ -35,29 +33,19 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
   const [renaming, setRenaming] = useState<PasskeySummary | null>(null);
 
   const passkeysEnabled = session.limits.passkeys !== false;
-  const sharingEnabled = session.roots.some((root) => root.id === 'shared');
-  const linksEnabled = session.limits.publicLinks === true;
 
   const refresh = useCallback(async () => {
     setError(null);
     const noKeys = { passkeys: [] as PasskeySummary[], ssoDisabled: false, rescueCommand: '' };
-    const [keys, devices, published, linked] = await Promise.all([
+    const [keys, devices] = await Promise.all([
       passkeysEnabled ? api.listPasskeys().catch(() => noKeys) : Promise.resolve(noKeys),
       api.listSessions().catch(() => ({ sessions: [] as DeviceSession[] })),
-      sharingEnabled
-        ? api.listShares().catch(() => ({ shares: [] as ShareSummary[], enabled: true }))
-        : Promise.resolve({ shares: [] as ShareSummary[], enabled: false }),
-      linksEnabled
-        ? api.listLinks().catch(() => ({ links: [] as LinkSummary[], enabled: true }))
-        : Promise.resolve({ links: [] as LinkSummary[], enabled: false }),
     ]);
     setPasskeys(keys.passkeys);
     setSsoDisabled(keys.ssoDisabled === true);
     setRescueCommand(keys.rescueCommand || '');
-    setShares(published.shares);
-    setLinks(linked.links);
     setSessions(devices.sessions);
-  }, [passkeysEnabled, sharingEnabled, linksEnabled]);
+  }, [passkeysEnabled]);
 
   useEffect(() => {
     void refresh();
@@ -109,11 +97,11 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
               <div className="sheet__rowtext">
                 <strong>{session.user.displayName || session.user.username}</strong>
                 <span>
-                  {session.user.email ?? session.user.username} · signed in with{' '}
-                  {session.via === 'passkey' ? 'a passkey' : 'the portal'}
+                  {session.user.email ?? session.user.username} ·{' '}
+                  {session.via === 'cookie' ? 'signed in to Cloud on this browser' : 'signed in through the portal'}
                 </span>
               </div>
-              {session.via === 'passkey' && (
+              {session.via === 'cookie' && (
                 <button
                   type="button"
                   className="button"
@@ -247,86 +235,6 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
           )}
 
 
-          {sharingEnabled && (
-            <section className="sheet__section">
-              <h3>Shared by you</h3>
-              <p className="sheet__lede">
-                Each item reaches everyone on this server, or only the people you chose. Stopping sharing
-                deletes nothing — the item stays in My Files.
-              </p>
-              {shares === null ? (
-                <div className="spinner" />
-              ) : shares.length === 0 ? (
-                <p className="sheet__empty">You have not shared anything.</p>
-              ) : (
-                shares.map((item) => (
-                  <div key={item.id} className="sheet__row">
-                    <Icon name={item.isDir === false ? 'file' : 'folder'} size={18} style={{ color: 'var(--accent)' }} />
-                    <div className="sheet__rowtext">
-                      <strong>{item.name}</strong>
-                      <span>
-                        {shareAudience(item)} · {displayPath(item.path)}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="button"
-                      onClick={() => run(() => api.unshareById(item.id))}
-                      disabled={busy}
-                    >
-                      Stop sharing
-                    </button>
-                  </div>
-                ))
-              )}
-            </section>
-          )}
-
-          {linksEnabled && (
-            <section className="sheet__section">
-              <h3>Public links</h3>
-              <p className="sheet__lede">
-                Anyone with one of these links can download the item — no account needed. Removing a link
-                stops it working; the item itself is untouched.
-              </p>
-              {links === null ? (
-                <div className="spinner" />
-              ) : links.length === 0 ? (
-                <p className="sheet__empty">You have no public links.</p>
-              ) : (
-                links.map((link) => (
-                  <div key={link.id} className="sheet__row">
-                    <Icon name="link" size={18} style={{ color: 'var(--accent)' }} />
-                    <div className="sheet__rowtext">
-                      <strong>{link.name}</strong>
-                      <span>
-                        {displayPath(link.path)} ·{' '}
-                        {link.expiresAt ? `expires ${formatDate(link.expiresAt)}` : 'does not expire'}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="iconbutton"
-                      title="Copy link"
-                      aria-label={`Copy link to ${link.name}`}
-                      onClick={() => void navigator.clipboard?.writeText(link.url)}
-                    >
-                      <Icon name="copy" size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className="button"
-                      onClick={() => run(() => api.removeLink(link.id))}
-                      disabled={busy}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))
-              )}
-            </section>
-          )}
-
           <section className="sheet__section">
             <h3>Signed-in devices</h3>
             {sessions === null ? (
@@ -408,12 +316,6 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
       )}
     </Scrim>
   );
-}
-
-/** "/me/Photos/Trip" as "My Files › Photos › Trip". */
-function displayPath(vpath: string): string {
-  const [, ...rest] = vpath.split('/').filter(Boolean);
-  return ['My Files', ...rest].join(' › ');
 }
 
 /** A name the user will recognise in the list, without asking them for one. */

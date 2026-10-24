@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { Client, type Entry } from 'ldapts';
 import { config } from '../config';
+import * as policy from './policy';
 import { forbidden, unauthorized } from '../lib/errors';
 
 const runFile = promisify(execFile);
@@ -382,6 +383,15 @@ async function adminGroupMembers(): Promise<Set<string> | null> {
  * a member of the admin group according to the system.
  */
 export async function isAdministrator(username: string, directorySays = false): Promise<boolean> {
+  return policy.isAppAdmin(username) || (await isDirectoryAdministrator(username, directorySays));
+}
+
+/**
+ * Administrator by the server's say-so rather than the app's: the admins
+ * group, or the config panel's extra administrators. The app shows these but
+ * cannot take them away — that is decided outside it.
+ */
+export async function isDirectoryAdministrator(username: string, directorySays = false): Promise<boolean> {
   const name = username.toLowerCase();
   if (config.auth.adminUsers.includes(name) || directorySays) return true;
   return (await adminGroupMembers())?.has(name) ?? false;

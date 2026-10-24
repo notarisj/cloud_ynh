@@ -75,6 +75,14 @@ export interface User extends Person {
   isAdmin: boolean;
   /** "local" for an account created in Cloud, "ldap" for a YunoHost user. */
   source: 'local' | 'ldap';
+  /** Admin through YunoHost's admins group or the config panel: not changeable here. */
+  adminFromServer: boolean;
+  /** Turned off for Cloud by an administrator. */
+  disabled: boolean;
+  usedBytes: number;
+  /** When any of its devices last used Cloud, or null. */
+  lastActiveAt: number | null;
+  devices: number;
 }
 
 export interface Session {
@@ -82,8 +90,12 @@ export interface Session {
   roots: RootInfo[];
   usage: Usage;
   limits: { maxUploadBytes: number; chunkSize: number; passkeys?: boolean; publicLinks?: boolean };
-  /** How this session was obtained, which decides how signing out works. */
-  via: 'portal' | 'passkey';
+  /**
+   * How this session is held, which decides how it is renewed and ended: the
+   * YunoHost portal's, or this app's own cookie — from a passkey, or approved
+   * from a signed-in phone.
+   */
+  via: 'portal' | 'cookie';
 }
 
 export interface Listing {
@@ -305,7 +317,7 @@ async function cookieSession(): Promise<Session> {
 
   if (response.status >= 500) throw new ServerUnreachableError();
   if (!response.ok) throw new SessionExpiredError();
-  return adopt((await response.json()) as SessionResponse, 'passkey');
+  return adopt((await response.json()) as SessionResponse, 'cookie');
 }
 
 /**
@@ -321,7 +333,7 @@ async function openSession(force = false): Promise<Session> {
     // A session that began with a passkey stays with the passkey: asking the
     // portal first would bounce a passkey user through a login page they
     // deliberately did not use.
-    if (cachedSession?.via === 'passkey') return cookieSession();
+    if (cachedSession?.via === 'cookie') return cookieSession();
 
     try {
       return await portalSession();
@@ -597,6 +609,24 @@ export function deleteUser(username: string): Promise<unknown> {
   return request(`/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
 }
 
+/** Administrators: turn an account off or on, change its rank, reset a Cloud account's password. */
+export function updateUser(
+  username: string,
+  change: { disabled?: boolean; isAdmin?: boolean; password?: string },
+): Promise<{ user: User }> {
+  return request(`/users/${encodeURIComponent(username)}`, { ...jsonBody(change), method: 'PATCH' });
+}
+
+/** Administrators: sign an account out of every device. */
+export function signOutUser(username: string): Promise<{ user: User }> {
+  return request(`/users/${encodeURIComponent(username)}/signout`, { method: 'POST' });
+}
+
+/** A Cloud account changes its own password; other devices are signed out. */
+export function changePassword(currentPassword: string, newPassword: string): Promise<unknown> {
+  return request('/auth/password', jsonBody({ currentPassword, newPassword }));
+}
+
 //=================================================
 // Uploads
 //=================================================
@@ -782,7 +812,52 @@ export async function signInWithPasskey(): Promise<Session> {
   });
   if (!verified.ok) throw await parseError(verified);
 
-  return adopt((await verified.json()) as SessionResponse, 'passkey');
+  return adopt((await verified.json()) as SessionResponse, 'cookie');
+}
+
+//=================================================
+// Quick sign-in: approved from a signed-in phone
+//=================================================
+
+export interface QuickStart {
+  id: string;
+  /** Proves to the server that this browser started the request. Never shown. */
+  secret: string;
+  /** The number the phone must pick. */
+  code: number;
+  /** What the QR code holds. */
+  url: string;
+  expiresIn: number;
+}
+
+export async function startQuickSignIn(): Promise<QuickStart> {
+  const response = await fetch(`${API}/auth/quick/start`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as QuickStart;
+}
+
+export type QuickStatus = 'pending' | 'scanned' | 'approved' | 'denied' | 'expired';
+
+/**
+ * How the request is going. When the phone has approved, the server sets
+ * this browser's session cookie in the same answer and the session comes back.
+ */
+export async function pollQuickSignIn(start: QuickStart): Promise<{ status: QuickStatus; session?: Session }> {
+  const response = await fetch(`${API}/auth/quick/${encodeURIComponent(start.id)}/poll`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ secret: start.secret }),
+  });
+  // Gone: used up, or expired long enough ago to have been swept.
+  if (response.status === 404) return { status: 'expired' };
+  if (!response.ok) throw await parseError(response);
+  const body = (await response.json()) as { status: QuickStatus; session?: SessionResponse };
+  return body.session ? { status: body.status, session: adopt(body.session, 'cookie') } : { status: body.status };
 }
 
 //=================================================
