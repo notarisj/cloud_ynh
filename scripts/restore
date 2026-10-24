@@ -30,6 +30,9 @@ cloud_fix_permissions
 ynh_script_progression "Restoring nginx configuration..."
 ynh_config_add_nginx
 
+ynh_script_progression "Restoring the rescue command..."
+cloud_install_rescue
+
 ynh_script_progression "Restoring systemd service..."
 ynh_config_add_systemd
 yunohost service add "$app" --description="Cloud file storage"

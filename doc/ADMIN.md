@@ -35,7 +35,8 @@ can share it again from the app.
 ## Configuration
 
 `yunohost app config set cloud` (or the Config panel in the web admin) covers
-the quota, the per-file upload ceiling, sharing, passkeys and thumbnails. The
+the quota, the per-file upload ceiling, extra administrators, sharing, public
+links, passkeys and thumbnails. The
 panel re-renders the app's `.env` and restarts the service, so a change takes
 effect immediately.
 
@@ -64,6 +65,37 @@ of a key proves who you are, not that you are still allowed in. Their files stay
 on disk, and anything they had shared disappears from everyone else's Shared
 view along with their access.
 
+### Administrators
+
+Members of the YunoHost `admins` group administer the app. To make someone else
+an administrator of Cloud alone, name them in the config panel's **Extra
+administrators** field (comma-separated):
+
+```bash
+yunohost app config set cloud main.access.admin_users -v "alice,bob"
+```
+
+Administrators can stop any share and manage the accounts described next.
+
+### Accounts that exist only in Cloud
+
+An administrator can add an account from **Users** in the sidebar — for someone
+who needs a folder here but not a YunoHost account. It signs in with a username
+and password, from the browser or the iOS app, and gets its own My Files like
+anyone else. Names already used by a YunoHost or system account are refused, and
+if one is ever created later with the same name, the YunoHost account wins and
+the local one stops signing in.
+
+The accounts live in `.meta/users.json` with scrypt-hashed passwords. Removing
+one signs it out everywhere and forgets its passkeys; its files stay in
+`users/<name>` until you delete them.
+
+### Who sees a share
+
+A share reaches either everyone signed in to the app, or only the people its
+owner picks. An item shared with named people does not appear in anyone else's
+Shared view, search or sync, and its path answers as if it did not exist.
+
 The `cloud.api` permission is set to `visitors` and marked protected. That is
 deliberate and must not be changed: it makes `/api/v1` reachable without a
 portal cookie so the iOS app and passkey sign-in can work, and every route
@@ -85,6 +117,34 @@ yunohost app config set cloud main.features.enable_public_links -v false
 Turning the feature off stops every link working at once without deleting
 any; they work again if it is turned back on. Removing an item, or its
 owner's account files, removes its links with it.
+## Passkey-only accounts, and the way back in
+
+A user who has registered a passkey can turn portal sign-in off for their own
+account, in Settings. From then on the YunoHost portal will not open this app
+for them: the passkey is the only way in. The app asks them to confirm with the
+passkey before it does this, so a key that does not actually work cannot be
+what they are left with, and it shows them the recovery command before the
+switch as well as after.
+
+Only the account itself is affected. Everyone else on the server signs in
+through the portal exactly as before.
+
+When someone does lose that passkey, the way back is on the server, as root:
+
+```bash
+sudo cloud-rescue allow-portal alice     # give one account the portal back
+sudo cloud-rescue status                 # who is passkey-only, and how many keys they hold
+sudo cloud-rescue list alice             # that account's passkeys, when each was last used
+sudo cloud-rescue reset alice            # remove every passkey and re-enable the portal
+```
+
+Deliberately there is no network path to this. An account with no passkey
+cannot be switched to passkey-only — `deny-portal` refuses — so the command
+cannot be used to lock somebody out either.
+
+The commands edit `.meta/passkeys/<user>.json` in place, keeping its owner and
+mode, and the service re-reads that file on every request. No restart is
+needed. On a second instance the command is named after it: `cloud__2-rescue`.
 
 ## Passkeys
 

@@ -95,6 +95,9 @@ export function ConfirmDialog({
   );
 }
 
+/** Open modals, innermost last: Escape belongs to the one on top. */
+const stack: symbol[] = [];
+
 /**
  * The backdrop every modal shares.
  *
@@ -104,13 +107,33 @@ export function ConfirmDialog({
  * without.
  */
 export function Scrim({ children, onDismiss }: { children: React.ReactNode; onDismiss: () => void }) {
+  const [id] = useState(() => Symbol('scrim'));
+  // Callers pass a fresh closure on every render. Reading it through a ref
+  // keeps one listener for the modal's whole life: re-subscribing on each
+  // render would drop a key press whenever another listener re-renders the
+  // app before this one runs.
+  const dismiss = useRef(onDismiss);
   useEffect(() => {
+    dismiss.current = onDismiss;
+  });
+
+  useEffect(() => {
+    stack.push(id);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onDismiss();
+      // A confirmation over a sheet closes on its own; the sheet stays.
+      if (event.key !== 'Escape' || stack[stack.length - 1] !== id) return;
+      // Closing this one can unmount it before the next listener runs, which
+      // would make the modal underneath "the top" for the same key press.
+      event.stopImmediatePropagation();
+      dismiss.current();
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onDismiss]);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      const index = stack.lastIndexOf(id);
+      if (index !== -1) stack.splice(index, 1);
+    };
+  }, [id]);
 
   return (
     <div
@@ -118,7 +141,7 @@ export function Scrim({ children, onDismiss }: { children: React.ReactNode; onDi
       // Only a click on the backdrop itself dismisses; one that started inside
       // the dialog and drifted out should not.
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onDismiss();
+        if (event.target === event.currentTarget) dismiss.current();
       }}
     >
       {children}

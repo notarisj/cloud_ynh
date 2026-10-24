@@ -9,8 +9,9 @@ import { loadPreferences, savePreferences } from './lib/prefs';
 import { locationHash, readHash, type View } from './lib/routing';
 import { filesFromDrop, uploads } from './lib/uploads';
 import { ContextMenu, type MenuAction } from './components/ContextMenu';
+import { Breadcrumbs } from './components/Breadcrumbs';
 import { ConfirmDialog, PromptDialog } from './components/Dialogs';
-import { DRAG_TYPE, FileBrowser, draggedPaths, type ViewMode } from './components/FileBrowser';
+import { FileBrowser, draggedPaths, type ViewMode } from './components/FileBrowser';
 import { FolderPicker } from './components/FolderPicker';
 import { InfoDialog } from './components/InfoDialog';
 import { LinkDialog } from './components/LinkDialog';
@@ -18,10 +19,12 @@ import { Icon } from './components/Icon';
 import { PreviewOverlay } from './components/PreviewOverlay';
 import { SelectionBar } from './components/SelectionBar';
 import { SettingsPanel } from './components/SettingsPanel';
+import { ShareDialog } from './components/ShareDialog';
 import { Sidebar } from './components/Sidebar';
 import { SignIn } from './components/SignIn';
 import { TrashView } from './components/TrashView';
 import { UploadTray } from './components/UploadTray';
+import { UsersView } from './components/UsersView';
 
 
 /** Clipboard for cut/copy, held only for the lifetime of the page. */
@@ -39,6 +42,7 @@ type Dialog =
   | { kind: 'pick'; operation: 'move' | 'copy'; entries: FileEntry[] }
   | { kind: 'info'; entry: FileEntry }
   | { kind: 'link'; entry: FileEntry }
+  | { kind: 'share'; entries: FileEntry[] }
   | null;
 
 /** Renew a read ticket this long before it lapses. */
@@ -49,6 +53,7 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
+  const [signInReason, setSignInReason] = useState<string | null>(null);
 
   const initial = useMemo(() => readHash(), []);
   const [view, setView] = useState<View>(initial.view);
@@ -79,6 +84,7 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usersOpen, setUsersOpen] = useState(false);
 
   const filePicker = useRef<HTMLInputElement>(null);
   const folderPicker = useRef<HTMLInputElement>(null);
@@ -111,6 +117,7 @@ export function App() {
       })
       .catch((cause: unknown) => {
         if (cause instanceof SessionExpiredError) {
+          setSignInReason(cause.reason);
           setSignedOut(true);
           return;
         }
@@ -143,6 +150,7 @@ export function App() {
 
   const reportError = useCallback((cause: unknown) => {
     if (cause instanceof SessionExpiredError) {
+      setSignInReason(cause.reason);
       setExpired(true);
       return;
     }
@@ -323,13 +331,17 @@ export function App() {
       }
     });
 
-  const doShare = (targets: FileEntry[]) =>
+  const doShare = (targets: FileEntry[], visibility: 'all' | 'users' = 'all', sharedWith: string[] = []) =>
     runAction(async () => {
-      for (const target of targets) await api.share(target.path);
+      for (const target of targets) await api.share(target.path, visibility, sharedWith);
+      const audience =
+        visibility === 'users'
+          ? ` for ${sharedWith.length === 1 ? '1 person' : `${sharedWith.length} people`}`
+          : '';
       setNotice(
         targets.length === 1
-          ? `“${targets[0]?.name}” is now in Shared. It stays in My Files.`
-          : `${targets.length} items are now in Shared. They stay in My Files.`,
+          ? `“${targets[0]?.name}” is now in Shared${audience}. It stays in My Files.`
+          : `${targets.length} items are now in Shared${audience}. They stay in My Files.`,
       );
     });
 
@@ -439,7 +451,7 @@ export function App() {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
-      if (dialog || previewIndex !== null || settingsOpen) return;
+      if (dialog || previewIndex !== null || settingsOpen || usersOpen) return;
 
       const meta = event.metaKey || event.ctrlKey;
 
@@ -482,7 +494,7 @@ export function App() {
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [dialog, previewIndex, settingsOpen, entries, selected, writable, doPaste, open]);
+  }, [dialog, previewIndex, settingsOpen, usersOpen, entries, selected, writable, doPaste, open]);
 
   //=================================================
   // Menu
@@ -523,9 +535,12 @@ export function App() {
     ];
 
     if (entry.shared && !entry.readOnly) {
-      actions.push({ id: 'unshare', label: 'Stop Sharing', icon: 'shared', separatorBefore: true });
+      // Who it reaches is changed from the item's own place in My Files.
+      const adjustable = mine && sharingEnabled && entry.path.startsWith('/me/') && !many;
+      if (adjustable) actions.push({ id: 'share', label: 'Sharing Options…', icon: 'shared', separatorBefore: true });
+      actions.push({ id: 'unshare', label: 'Stop Sharing', icon: 'shared', separatorBefore: !adjustable });
     } else if (mine && sharingEnabled) {
-      actions.push({ id: 'share', label: 'Share with Everyone', icon: 'shared', separatorBefore: true });
+      actions.push({ id: 'share', label: 'Share…', icon: 'shared', separatorBefore: true });
     }
     // A public link reaches people with no account here, so it is only ever
     // made from the item's own place in My Files.
@@ -569,7 +584,7 @@ export function App() {
       case 'refresh': void refresh(); break;
       case 'open': if (entry) open(entry); break;
       case 'download': download(targets()); break;
-      case 'share': void doShare(targets()); break;
+      case 'share': setDialog({ kind: 'share', entries: targets() }); break;
       case 'unshare': void doUnshare(targets()); break;
       case 'copyTo': setDialog({ kind: 'pick', operation: 'copy', entries: targets() }); break;
       case 'moveTo': setDialog({ kind: 'pick', operation: 'move', entries: targets() }); break;
@@ -604,6 +619,7 @@ export function App() {
       <SignIn
         expired={expired}
         portalDisabled={api.portalSignInDisabled()}
+        reason={signInReason}
         onSignedIn={() => window.location.reload()}
       />
     );
@@ -644,6 +660,10 @@ export function App() {
           setSelection(new Set());
           setSidebarOpen(false);
         }}
+        onShowUsers={() => {
+          setUsersOpen(true);
+          setSidebarOpen(false);
+        }}
         onShowSettings={() => {
           setSettingsOpen(true);
           setSidebarOpen(false);
@@ -677,34 +697,11 @@ export function App() {
           </button>
 
           {view === 'browse' ? (
-            <nav className="crumbs" aria-label="Breadcrumb">
-              {crumbs.map((crumb, index) => (
-                <span key={crumb.path} className="crumbs__step">
-                  {index > 0 && <Icon name="chevronRight" size={13} weight={2.2} className="crumbs__sep" />}
-                  <button
-                    type="button"
-                    className="crumbs__item"
-                    onClick={() => navigate(crumb.path)}
-                    // A folder further up the path is a place to drop things,
-                    // the way the Finder's path bar is.
-                    onDragOver={(event) => {
-                      if (crumb.path !== path && writable && event.dataTransfer.types.includes(DRAG_TYPE)) {
-                        event.preventDefault();
-                      }
-                    }}
-                    onDrop={(event) => {
-                      const paths = draggedPaths(event);
-                      if (!paths) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      void moveInto(paths, crumb.path);
-                    }}
-                  >
-                    {crumb.label}
-                  </button>
-                </span>
-              ))}
-            </nav>
+            <Breadcrumbs
+              crumbs={crumbs}
+              onNavigate={navigate}
+              onDropInto={writable ? (paths, folder) => void moveInto(paths, folder) : undefined}
+            />
           ) : (
             <h1 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>
               {view === 'trash' ? 'Recently Deleted' : view === 'recents' ? 'Recents' : `Results for “${query}”`}
@@ -896,7 +893,7 @@ export function App() {
           writable={writable && selected.every((entry) => !entry.readOnly && !entry.sharedBy)}
           sharingEnabled={sharingEnabled}
           onDownload={() => download(selected)}
-          onShare={() => void doShare(selected)}
+          onShare={() => setDialog({ kind: 'share', entries: selected })}
           onUnshare={() => void doUnshare(selected)}
           onMove={() => setDialog({ kind: 'pick', operation: 'move', entries: selected })}
           onCopy={() => setDialog({ kind: 'pick', operation: 'copy', entries: selected })}
@@ -988,6 +985,19 @@ export function App() {
 
       {dialog?.kind === 'link' && <LinkDialog entry={dialog.entry} onClose={() => setDialog(null)} />}
 
+      {dialog?.kind === 'share' && (
+        <ShareDialog
+          entries={dialog.entries}
+          me={session.user.username}
+          onCancel={() => setDialog(null)}
+          onConfirm={(visibility, sharedWith) => {
+            const entries = dialog.entries;
+            setDialog(null);
+            void doShare(entries, visibility, sharedWith);
+          }}
+        />
+      )}
+
       {dialog?.kind === 'confirmPurge' && (
         <ConfirmDialog
           title={
@@ -1031,6 +1041,13 @@ export function App() {
             void refresh();
             refreshUsage();
           }}
+        />
+      )}
+
+      {usersOpen && (
+        <UsersView
+          session={session}
+          onClose={() => setUsersOpen(false)}
         />
       )}
 

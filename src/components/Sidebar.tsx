@@ -9,7 +9,7 @@ interface SidebarProps {
   roots: RootInfo[];
   currentRoot: string | null;
   view: View;
-  user: { displayName: string; username: string };
+  user: { displayName: string; username: string; isAdmin: boolean };
   usage: Usage | null;
   open: boolean;
   onNavigate: (path: string) => void;
@@ -17,6 +17,8 @@ interface SidebarProps {
   onShowRecents: () => void;
   /** Items dragged from a folder were dropped onto a location. */
   onDropInto?: (paths: string[], folder: string) => void;
+  /** Shown to administrators only. */
+  onShowUsers: () => void;
   onShowSettings: () => void;
   onClose: () => void;
 }
@@ -24,8 +26,8 @@ interface SidebarProps {
 const ROOT_ICONS: Record<string, 'home' | 'shared'> = { me: 'home', shared: 'shared' };
 
 export function Sidebar({
-  roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onShowRecents, onShowSettings, onClose,
-  onDropInto,
+  roots, currentRoot, view, user, usage, open, onNavigate, onShowTrash, onShowRecents, onShowUsers, onShowSettings,
+  onClose, onDropInto,
 }: SidebarProps) {
   // An unlimited quota has no meaningful bar, so the meter falls back to the
   // volume's free space — still useful, and honest about what it is showing.
@@ -100,6 +102,17 @@ export function Sidebar({
         <Icon name="trash" size={18} />
         <span>Recently Deleted</span>
       </button>
+
+      {user.isAdmin && (
+        <button
+          type="button"
+          className="sidebar__item"
+          onClick={onShowUsers}
+        >
+          <Icon name="shared" size={18} />
+          <span>Users</span>
+        </button>
+      )}
 
       <div className="sidebar__spacer" />
 

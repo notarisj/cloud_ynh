@@ -63,6 +63,16 @@ cloud_build() {
     popd >/dev/null
 }
 
+# The rescue CLI: the way back in when someone turns off portal sign-in and
+# then loses the passkey it left them with. ynh_config_add drops a 400 root:root
+# file — correct for a config, useless for something meant to be run — so the
+# mode is set afterwards.
+cloud_install_rescue() {
+    ynh_config_add --template="rescue.sh" --destination="/usr/local/bin/$app-rescue"
+    chown root:root "/usr/local/bin/$app-rescue"
+    chmod 750 "/usr/local/bin/$app-rescue"
+}
+
 # install_dir holds the .env with JWT + proxy secrets: readable only by the app user.
 cloud_fix_permissions() {
     chown -R "$app:$app" "$install_dir"
@@ -71,4 +81,12 @@ cloud_fix_permissions() {
 
     chown -R "$app:$app" "$data_dir"
     chmod 750 "$data_dir"
+}
+
+# Extra administrators (config panel), as the .env wants them: lowercase
+# account names separated by commas and nothing else, so no stray character
+# from the panel can reach the file.
+cloud_normalise_admin_users() {
+    admin_users=$(ynh_app_setting_get --key=admin_users)
+    admin_users=$(printf '%s' "${admin_users:-}" | tr 'A-Z' 'a-z' | tr ' ;\n\t' ',,,,' | tr -cd 'a-z0-9._,-' | tr -s ',' | sed 's/^,//; s/,$//')
 }

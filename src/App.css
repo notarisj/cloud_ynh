@@ -265,30 +265,54 @@
   align-items: center;
   gap: 1px;
   min-width: 0;
-  overflow: hidden;
+  /* The path folds itself once it gets deep, so this is only the last resort
+     for a very narrow window — and a scrollbar under the toolbar would be
+     noise, so it is hidden. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .crumbs__step { display: contents; }
+.crumbs::-webkit-scrollbar { display: none; }
 
 .crumbs__item {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* Never shrink. A crumb squeezed down to "Untitl" answers nothing, and six
+     of them answer nothing six times; a name that really is long ellipsises at
+     a width you can still read instead. */
+  flex: none;
+  max-width: 20ch;
   padding: 3px 7px;
   border-radius: var(--radius-sm);
   font-size: 13.5px;
   color: var(--text-secondary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: background 120ms var(--ease), color 120ms var(--ease);
 }
 
 .crumbs__item:hover { background: var(--bg-hover); color: var(--text); }
 
+/* Where you actually are gets the most room and the most weight. */
 .crumbs__item:last-child {
+  max-width: 32ch;
   color: var(--text);
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.crumbs__more {
+  padding: 3px 5px;
+  color: var(--text-tertiary);
+}
+
+.crumbs__more:hover { color: var(--text); }
+
+@media (max-width: 860px) {
+  .crumbs__item { max-width: 14ch; }
+  .crumbs__item:last-child { max-width: 20ch; }
 }
 
 .crumbs__sep { color: var(--text-tertiary); flex: none; }
@@ -333,6 +357,28 @@
   overflow-x: hidden;
   position: relative;
   padding: 14px 16px 96px;
+  /* A column so the file surface below can claim the leftover height: a
+     rubber-band drag has to work in the empty space under the last file, which
+     means that empty space has to belong to something. */
+  display: flex;
+  flex-direction: column;
+}
+
+.browser {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  /* The drag is a selection gesture, not a text one. */
+  user-select: none;
+}
+
+.marquee {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--accent-tint);
 }
 
 .content__heading {
@@ -849,7 +895,7 @@
   font-weight: 600;
 }
 
-.tray__head span { flex: 1; }
+.tray__head span { flex: 1; min-width: 0; }
 
 .tray__body {
   max-height: 264px;
@@ -878,6 +924,27 @@
 .tray__status {
   grid-column: 1 / -1;
   font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.tray__totals {
+  flex: none;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  /* "144 MB / 179 MB" is one value, and breaking it across two lines makes it
+     read as two. The heading beside it is what gives way instead. */
+  white-space: nowrap;
+}
+
+/* Sits under the heading rather than beside it: on a narrow tray the two
+   together are wider than the row, and the heading is the part that must not
+   be pushed out. */
+.tray__eta {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  font-weight: 400;
   color: var(--text-tertiary);
 }
 
@@ -1325,9 +1392,6 @@
   color: var(--text-secondary);
 }
 
-.sheet__subsection { margin-top: 20px; }
-.sheet__subsection h4 { margin: 0 0 6px; font-size: 13.5px; font-weight: 600; }
-
 .sheet__empty {
   margin: 6px 0 12px;
   font-size: 13px;
@@ -1369,6 +1433,44 @@
 }
 
 .sheet__section > .button { margin: 10px 0 4px; }
+
+.sheet__subsection {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--separator);
+}
+
+.sheet__subsection h4 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* A command to be copied out of the app and run somewhere else. Monospace,
+   selectable in one gesture, and visually separate from the prose around it. */
+.rescue {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  background: var(--bg-field);
+}
+
+.rescue code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  user-select: all;
+  cursor: text;
+}
+
+.rescue .iconbutton { flex: none; width: 26px; height: 26px; }
 
 .pill {
   padding: 1px 7px;
@@ -1459,3 +1561,60 @@
 .storage__user:hover { background: var(--bg-hover); }
 .storage__user span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storage__user svg { color: var(--text-tertiary); flex: none; }
+
+/*=================================================
+  Sharing with people
+=================================================*/
+
+.dialog--share { width: min(440px, 100%); }
+
+/* The macOS segmented control: one rounded track, the choice raised in it. */
+.segmented {
+  display: flex;
+  padding: 2px;
+  margin: 0 0 14px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+}
+.segmented button {
+  flex: 1;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.segmented button[aria-checked='true'] {
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+.segmented button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.dialog input[type='text'].share__filter { margin-bottom: 8px; }
+.share__people { height: 208px; }
+.share__people .picker__row span { display: flex; flex-direction: column; }
+.share__handle { font-size: 11.5px; color: var(--text-tertiary); }
+.dialog p.share__count { margin: 8px 0 16px; font-size: 12.5px; color: var(--text-tertiary); }
+
+/*=================================================
+  Forms in sheets
+=================================================*/
+
+.form { display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
+.form__field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-secondary); }
+.form__field input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--separator-strong);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+.form__field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.form__hint { margin: 0; font-size: 12px; color: var(--text-tertiary); line-height: 1.45; }
+.form__check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.4; }
+.form__check input { margin-top: 2px; accent-color: var(--accent); }
+.sheet__rowtext strong .pill { margin-left: 6px; }

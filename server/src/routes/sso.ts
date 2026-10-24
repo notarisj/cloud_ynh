@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { config } from '../config';
 import { wrap } from '../lib/async';
 import { unauthorized } from '../lib/errors';
-import * as ldap from '../services/ldap';
 import { requireProxySecret, ssoIdentity } from '../middleware/auth';
+import * as ldap from '../services/ldap';
 import * as passkeys from '../services/passkeys';
 import * as storage from '../services/storage';
 import * as tokens from '../services/tokens';
@@ -44,14 +44,21 @@ ssoRouter.get(
       username = identity.username;
       displayName = identity.displayName ?? identity.username;
       email = identity.email;
-
-      if (await passkeys.isSsoDisabled(username)) {
-        throw unauthorized('SSO login is disabled for this account. Please use a passkey.', 'sso_disabled');
-      }
     } else {
       username = config.auth.devUser;
       displayName = config.auth.devUser;
       email = `${config.auth.devUser}@localhost`;
+    }
+
+    // Deliberately outside the production branch above: whether an account is
+    // passkey-only is a property of the account, not of the environment it is
+    // running in. Keeping it here also means the behaviour can be exercised
+    // locally instead of only ever being tested in anger.
+    if (await passkeys.isSsoDisabled(username)) {
+      throw unauthorized(
+        'Portal sign-in is turned off for this account. Sign in with your passkey.',
+        'sso_disabled',
+      );
     }
 
     await storage.ensureUserRoot(username);

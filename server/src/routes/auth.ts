@@ -8,6 +8,7 @@ import * as ldap from '../services/ldap';
 import * as passkeys from '../services/passkeys';
 import * as storage from '../services/storage';
 import * as tokens from '../services/tokens';
+import * as users from '../services/users';
 
 export const authRouter: Router = Router();
 
@@ -31,7 +32,16 @@ const loginLimiter = rateLimit({
  * goes through here, so the admin flag and the display name survive a refresh
  * instead of being reset to "not an admin, called by their username".
  */
+/** An account created in this app, as a session sees it. */
+function localPrincipal(user: users.LocalUser): tokens.Principal {
+  return { username: user.username, displayName: user.username, isAdmin: user.isAdmin };
+}
+
 async function currentPrincipal(known: tokens.Principal): Promise<tokens.Principal> {
+  // Local accounts are not in the directory; their record here is the truth.
+  const local = users.getLocalUser(known.username);
+  if (local) return localPrincipal(local);
+
   const profile = await ldap.lookup(known.username);
   if (!profile) return known;
   return {
@@ -88,14 +98,24 @@ authRouter.post(
       throw badRequest('username and password are required', 'missing_credentials');
     }
 
-    const user = await ldap.authenticate(username, password);
-    await storage.ensureUserRoot(user.username);
+    // The directory first; an account created in this app only when the
+    // directory turned the name down and such an account exists.
+    let principal: tokens.Principal;
+    try {
+      const user = await ldap.authenticate(username, password);
+      principal = { username: user.username, displayName: user.displayName, email: user.email, isAdmin: user.isAdmin };
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'unauthorized' || !users.getLocalUser(username)) throw err;
+      principal = localPrincipal(await users.authenticateLocal(username, password));
+    }
 
-    const pair = await tokens.issueTokenPair(user, deviceLabel(device, req.headers['user-agent']));
+    await storage.ensureUserRoot(principal.username);
+
+    const pair = await tokens.issueTokenPair(principal, deviceLabel(device, req.headers['user-agent']));
 
     res.json({
       ...pair,
-      roots: storage.rootsFor(user.username),
+      roots: storage.rootsFor(principal.username),
       server: { name: 'Cloud', version: API_VERSION, appPath: config.appPath },
     });
   }),
@@ -118,12 +138,13 @@ authRouter.post(
     // Rotate first: a replayed token is rejected here before anything else runs.
     const rotated = await tokens.rotateRefreshToken(username, refreshToken);
 
-    // An account whose app permission was withdrawn should stop working now,
-    // not in thirty days when the refresh token finally expires.
-    const permission = await ldap.stillPermitted(username);
-    if (permission === 'revoked') {
-      await tokens.revokeSession(username, rotated.sid);
-      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    const isLocal = !!users.getLocalUser(username);
+    if (!isLocal) {
+      const permission = await ldap.stillPermitted(username);
+      if (permission === 'revoked') {
+        await tokens.revokeSession(username, rotated.sid);
+        throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+      }
     }
 
     const user = await currentPrincipal(rotated.principal);
@@ -321,10 +342,13 @@ authRouter.post(
       throw err;
     }
 
-    if ((await ldap.stillPermitted(cookie.username)) === 'revoked') {
-      await tokens.revokeSession(cookie.username, rotated.sid);
-      clearSessionCookie(res);
-      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    const isLocal = !!users.getLocalUser(cookie.username);
+    if (!isLocal) {
+      if ((await ldap.stillPermitted(cookie.username)) === 'revoked') {
+        await tokens.revokeSession(cookie.username, rotated.sid);
+        clearSessionCookie(res);
+        throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+      }
     }
 
     const user = await currentPrincipal(rotated.principal);
@@ -384,15 +408,44 @@ authRouter.get(
   }),
 );
 
+/**
+ * Turn portal sign-in off for this account, leaving the passkey as the only
+ * way in — or turn it back on.
+ *
+ * Switching it OFF requires a passkey assertion made moments ago, in the same
+ * browser: registering a key proves a key was created, not that the user can
+ * still use it. Somebody who enrolled a passkey into a password manager they
+ * cannot reopen would otherwise be one click from needing SSH to get back in.
+ * Turning it back ON is the safe direction and needs nothing extra.
+ */
 authRouter.post(
   '/passkeys/sso/disable',
   requireAuth,
   wrap(async (req, res) => {
     const user = principal(req);
-    const { disabled } = req.body ?? {};
+    const { disabled, ticket, response } = req.body ?? {};
     if (typeof disabled !== 'boolean') throw badRequest('disabled flag is required', 'missing_flag');
+
+    if (disabled) {
+      if (!response || typeof response !== 'object') {
+        throw badRequest(
+          'Confirm with your passkey before turning off portal sign-in',
+          'passkey_confirmation_required',
+        );
+      }
+
+      const verified = await passkeys.finishAuthentication(ticket, response);
+      if (verified.username !== user.username) {
+        // The assertion was valid but belongs to somebody else's key.
+        throw badRequest('That passkey belongs to another account', 'passkey_mismatch');
+      }
+    }
+
     await passkeys.setSsoDisabled(user.username, disabled);
-    res.status(204).end();
+    res.json({
+      ssoDisabled: disabled,
+      rescueCommand: passkeys.rescueCommand(user.username),
+    });
   }),
 );
 
@@ -443,8 +496,11 @@ authRouter.post(
 
     // Possession of the key proves identity, not entitlement: an account whose
     // app permission was withdrawn must not get back in with an old passkey.
-    if ((await ldap.stillPermitted(verified.username)) === 'revoked') {
-      throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+    const isLocal = !!users.getLocalUser(verified.username);
+    if (!isLocal) {
+      if ((await ldap.stillPermitted(verified.username)) === 'revoked') {
+        throw unauthorized('Access to this app has been withdrawn', 'no_permission');
+      }
     }
 
     const user = await currentPrincipal({

@@ -53,6 +53,7 @@ cloud_sync_sources
 # The .env has to exist before the build: nothing reads it at build time, but
 # writing it first means a failed build leaves a complete, inspectable install.
 ynh_script_progression "Writing configuration..."
+cloud_normalise_admin_users
 ynh_config_add --template=".env" --destination="$install_dir/server/.env"
 chmod 600 "$install_dir/server/.env"
 
@@ -80,6 +81,9 @@ cloud_fix_permissions
 #=================================================
 ynh_script_progression "Configuring nginx..."
 ynh_config_add_nginx
+
+ynh_script_progression "Installing the rescue command..."
+cloud_install_rescue
 
 ynh_script_progression "Configuring systemd service..."
 ynh_config_add_systemd

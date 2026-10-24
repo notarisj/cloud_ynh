@@ -153,9 +153,12 @@ filesRouter.post(
     }
     if (parsed.rel === '') throw badRequest('Cannot share the whole of My Files', 'invalid_path');
 
+    const visibility = req.body?.visibility === 'users' ? 'users' : 'all';
+    const sharedWith: unknown = req.body?.sharedWith;
+
     // Prove it exists and is readable before writing a record for it.
     const entry = await storage.stat(user.username, parsed.vpath);
-    const record = await shares.share(user.username, parsed.rel, entry.name);
+    const record = await shares.share(user.username, parsed.rel, entry.name, visibility, sharedWith);
 
     res.status(201).json({
       share: summarise(record, entry.isDir),
@@ -205,6 +208,9 @@ function summarise(record: shares.ShareRecord, isDir: boolean) {
     name: record.slug,
     sharedAt: record.sharedAt,
     isDir,
+    // Who can see it: everyone signed in to this server, or a list of people.
+    visibility: record.visibility ?? 'all',
+    sharedWith: record.sharedWith ?? [],
   };
 }
 

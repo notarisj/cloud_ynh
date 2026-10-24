@@ -32,5 +32,6 @@ ynh_nodejs_remove
 # only removes it when the admin explicitly asked to purge.
 ynh_script_progression "Removing application files..."
 ynh_safe_rm "$install_dir"
+ynh_safe_rm "/usr/local/bin/$app-rescue"
 
 ynh_script_progression "Removal of $app completed"

@@ -436,6 +436,17 @@ export interface PasskeySummary {
 export interface PasskeyListInfo {
   passkeys: PasskeySummary[];
   ssoDisabled: boolean;
+  /**
+   * What an administrator types on the server to give this account the portal
+   * back. Built here rather than in the browser because only the server knows
+   * the instance name — on a second install the command is "cloud__2-rescue".
+   */
+  rescueCommand: string;
+}
+
+/** The command that undoes a passkey-only account from a shell on the server. */
+export function rescueCommand(username: string): string {
+  return `sudo ${config.appId}-rescue allow-portal ${username}`;
 }
 
 export async function list(username: string): Promise<PasskeyListInfo> {
@@ -454,9 +465,19 @@ export async function list(username: string): Promise<PasskeyListInfo> {
   return {
     passkeys,
     ssoDisabled: file?.ssoDisabled ?? false,
+    rescueCommand: rescueCommand(username),
   };
 }
 
+/**
+ * Turn portal sign-in off (or back on) for one account.
+ *
+ * Turning it off is the one setting in this app that can lock somebody out of
+ * their own files, so the route above it insists on a fresh passkey assertion
+ * first: the key has to work *now*, on this device, before the other door is
+ * closed. This function still refuses on an account with no passkey at all —
+ * belt and braces, since a future caller might forget.
+ */
 export async function setSsoDisabled(username: string, disabled: boolean): Promise<void> {
   assertUsername(username);
   await serialise(username, async () => {
@@ -513,6 +534,15 @@ export async function remove(username: string, id: string): Promise<void> {
     // browser at all, so the portal comes back with it.
     if (remaining.length === 0) file.ssoDisabled = false;
     await write(file);
+  });
+}
+
+/** Forget every passkey an account holds — for an account that is being removed. */
+export async function removeAll(username: string): Promise<void> {
+  assertUsername(username);
+  await serialise(username, async () => {
+    await fs.rm(storeFile(username), { force: true });
+    index = null;
   });
 }
 

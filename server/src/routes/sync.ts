@@ -66,7 +66,7 @@ syncRouter.get(
     // "/shared" is an index rather than a directory, so the walk starts at
     // each published item instead of at a single tree.
     const targets = scope.isShareIndex
-      ? shares.all().map((record) => ({
+      ? shares.visibleFor(user.username).map((record) => ({
           abs: shares.absOf(record),
           vpath: `/shared/${record.slug}`,
           sharedAt: record.sharedAt,

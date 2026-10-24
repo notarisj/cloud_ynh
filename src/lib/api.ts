@@ -63,6 +63,20 @@ export interface Usage {
   availableBytes: number;
 }
 
+/** Someone with an account on this server, as anyone signed in sees them. */
+export interface Person {
+  username: string;
+  displayName: string;
+}
+
+/** The fuller record administrators get. */
+export interface User extends Person {
+  email?: string;
+  isAdmin: boolean;
+  /** "local" for an account created in Cloud, "ldap" for a YunoHost user. */
+  source: 'local' | 'ldap';
+}
+
 export interface Session {
   user: { username: string; displayName: string; email?: string; isAdmin: boolean };
   roots: RootInfo[];
@@ -89,6 +103,9 @@ export interface ShareSummary {
   sharedAs: string;
   name: string;
   sharedAt: number;
+  /** Everyone signed in ("all"), or only the people in sharedWith. Absent from older servers. */
+  visibility?: 'all' | 'users';
+  sharedWith?: string[];
   /** Absent from servers before API version 2. */
   isDir?: boolean;
 }
@@ -170,9 +187,17 @@ export class ApiError extends Error {
 
 /** Raised when the portal session itself is gone and the user must sign in again. */
 export class SessionExpiredError extends ApiError {
-  constructor() {
-    super(401, 'sso_expired', 'Your session has expired.');
+  /**
+   * What to tell the user on the sign-in screen. "Your session expired" and
+   * "you turned the portal off for this account" both land here, and only one
+   * of them is fixed by signing in through the portal again.
+   */
+  readonly reason: string | null;
+
+  constructor(reason: string | null = null, code = 'sso_expired') {
+    super(401, code, reason ?? 'Your session has expired.');
     this.name = 'SessionExpiredError';
+    this.reason = reason;
   }
 }
 
@@ -240,9 +265,16 @@ async function portalSession(): Promise<Session> {
   }
 
   if (response.status === 401 || response.status === 403) {
-    const body = (await response.json().catch(() => null)) as { code?: string } | null;
-    portalRefused = body?.code === 'sso_disabled';
-    throw new SessionExpiredError();
+    // The bridge says *why* it refused. "This account is passkey-only" has to
+    // reach the sign-in screen intact, or the user is told to go and use the
+    // portal that just turned them away.
+    const refusal = await response
+      .json()
+      .then((body: { error?: string; code?: string }) => body ?? {})
+      .catch(() => ({}) as { error?: string; code?: string });
+
+    portalRefused = refusal.code === 'sso_disabled';
+    throw new SessionExpiredError(refusal.error ?? null, refusal.code ?? 'sso_expired');
   }
   if (response.status >= 500) {
     throw new ServerUnreachableError('The server could not start a session.');
@@ -295,8 +327,18 @@ async function openSession(force = false): Promise<Session> {
       return await portalSession();
     } catch (cause) {
       if (!(cause instanceof SessionExpiredError)) throw cause;
+
       // No portal session. There may still be a passkey one.
-      return cookieSession();
+      try {
+        return await cookieSession();
+      } catch (fallback) {
+        // Both doors are shut, and only one of them said anything useful:
+        // "this account is passkey-only" has to survive the second failure,
+        // or the user is left reading "your session expired" and going back
+        // to the portal that just turned them away.
+        if (cause.reason && fallback instanceof SessionExpiredError && !fallback.reason) throw cause;
+        throw fallback;
+      }
     }
   })();
 
@@ -466,8 +508,8 @@ export function listShares(): Promise<{ shares: ShareSummary[]; enabled: boolean
   return request('/files/shares');
 }
 
-export function share(path: string): Promise<{ share: ShareSummary; entry: FileEntry }> {
-  return request('/files/share', jsonBody({ path }));
+export function share(path: string, visibility: 'all' | 'users' = 'all', sharedWith: string[] = []): Promise<{ share: ShareSummary; entry: FileEntry }> {
+  return request('/files/share', jsonBody({ path, visibility, sharedWith }));
 }
 
 export function unshare(path: string): Promise<unknown> {
@@ -533,6 +575,26 @@ export async function fetchText(path: string, maxBytes = 512 * 1024): Promise<st
   });
   if (!response.ok && response.status !== 206) throw await parseError(response);
   return response.text();
+}
+
+//=================================================
+// Users
+//=================================================
+
+/**
+ * People on this server. Administrators get each one's full record; everyone
+ * else gets names only, which is all choosing who to share with needs.
+ */
+export function getUsers(): Promise<{ users: (Person & Partial<User>)[]; minPasswordLength?: number }> {
+  return request('/users');
+}
+
+export function createUser(username: string, password: string, isAdmin = false): Promise<{ user: User }> {
+  return request('/users', jsonBody({ username, password, isAdmin }));
+}
+
+export function deleteUser(username: string): Promise<unknown> {
+  return request(`/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
 }
 
 //=================================================
@@ -603,7 +665,15 @@ export function abortUpload(id: string): Promise<unknown> {
 // cryptography, the server does the verification, and this module only carries
 // the two messages between them.
 
-export function listPasskeys(): Promise<{ passkeys: PasskeySummary[]; enabled: boolean; ssoDisabled: boolean }> {
+export interface PasskeyOverview {
+  passkeys: PasskeySummary[];
+  enabled: boolean;
+  ssoDisabled: boolean;
+  /** What an admin runs on the server to give this account the portal back. */
+  rescueCommand: string;
+}
+
+export function listPasskeys(): Promise<PasskeyOverview> {
   return request('/auth/passkeys');
 }
 
@@ -619,12 +689,38 @@ export function removePasskey(id: string): Promise<unknown> {
   return request(`/auth/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export function setSsoDisabled(disabled: boolean): Promise<void> {
-  return request('/auth/passkeys/sso/disable', {
+/**
+ * Turn portal sign-in off for this account, or back on.
+ *
+ * Turning it off asks for the passkey first. That is not ceremony for its own
+ * sake: it is the difference between "a passkey was created once" and "this
+ * passkey works, on this device, right now" — and the second is the only one
+ * worth betting your access on.
+ */
+export async function setSsoDisabled(
+  disabled: boolean,
+): Promise<{ ssoDisabled: boolean; rescueCommand: string }> {
+  if (!disabled) {
+    return request('/auth/passkeys/sso/disable', jsonBody({ disabled: false }));
+  }
+
+  const { startAuthentication } = await import('@simplewebauthn/browser');
+
+  const challenge = await fetch(`${API}/auth/passkeys/challenge`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ disabled }),
+    credentials: 'include',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: '{}',
   });
+  if (!challenge.ok) throw await parseError(challenge);
+  const { ticket, options } = (await challenge.json()) as { ticket: string; options: unknown };
+
+  const assertion = await startAuthentication({ optionsJSON: options as never });
+
+  return request(
+    '/auth/passkeys/sso/disable',
+    jsonBody({ disabled: true, ticket, response: assertion }),
+  );
 }
 
 /**

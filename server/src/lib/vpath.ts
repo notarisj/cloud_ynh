@@ -152,8 +152,12 @@ function parseSharedPath(username: string, segments: string[]): ResolvedPath {
     };
   }
 
+  // An item shared with other people is answered exactly like one that does
+  // not exist, so the slug cannot be used to find out what others publish.
   const record = shares.bySlug(slug);
-  if (!record) throw notFound('That shared item is no longer available', 'not_shared');
+  if (!record || !shares.visibleTo(record, username)) {
+    throw notFound('That shared item is no longer available', 'not_shared');
+  }
 
   const restSegments = segments.slice(2);
   for (const segment of restSegments) assertValidName(segment);

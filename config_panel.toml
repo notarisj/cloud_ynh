@@ -28,6 +28,19 @@ name.fr = "Configuration"
     max = 1000
 
   #=================================================
+  # Access
+  #=================================================
+
+  [main.access]
+  name.en = "Access"
+
+    [main.access.admin_users]
+    ask.en = "Extra administrators"
+    help.en = "Account names, separated by commas, that administer this app as well as members of the YunoHost admins group. Administrators can add and remove accounts that exist only in Cloud, and can stop any share."
+    type = "string"
+    optional = true
+
+  #=================================================
   # Features
   #=================================================
 

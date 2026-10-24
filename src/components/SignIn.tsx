@@ -8,6 +8,12 @@ interface SignInProps {
   expired: boolean;
   /** The portal answered that this account only signs in here with a passkey. */
   portalDisabled?: boolean;
+  /**
+   * Why the last attempt was refused, when the server said something more
+   * useful than "expired" — an account that has turned portal sign-in off, for
+   * instance, must not be told to go and use the portal.
+   */
+  reason?: string | null;
   onSignedIn: () => void;
 }
 
@@ -24,7 +30,7 @@ interface SignInProps {
  * the browser offers whichever passkeys it holds for this site — which also
  * means this screen cannot be used to find out whether an account exists.
  */
-export function SignIn({ expired, portalDisabled = false, onSignedIn }: SignInProps) {
+export function SignIn({ expired, portalDisabled = false, reason, onSignedIn }: SignInProps) {
   const [supported, setSupported] = useState<boolean | null>(null);
   // Whether the server offers passkeys at all. Unknown until it answers, and
   // assumed on for a server too old to say.
@@ -71,11 +77,12 @@ export function SignIn({ expired, portalDisabled = false, onSignedIn }: SignInPr
         <Icon name="cloud" size={44} weight={1.5} style={{ color: 'var(--accent)' }} />
         <h1>Cloud</h1>
         <p>
-          {portalDisabled
-            ? 'This account signs in to Cloud with a passkey only.'
-            : expired
-              ? 'Your session has expired.'
-              : 'Sign in to reach your files.'}
+          {reason ??
+            (portalDisabled
+              ? 'This account signs in to Cloud with a passkey only.'
+              : expired
+                ? 'Your session has expired.'
+                : 'Sign in to reach your files.')}
         </p>
 
         {error && (

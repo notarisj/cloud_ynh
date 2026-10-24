@@ -44,6 +44,7 @@ max_upload=${max_upload%%.*}
 user_quota_bytes=$(( user_quota * 1024 * 1024 * 1024 ))
 max_upload_bytes=$(( max_upload * 1024 * 1024 * 1024 ))
 
+cloud_normalise_admin_users
 ynh_config_add --template=".env" --destination="$install_dir/server/.env"
 chmod 600 "$install_dir/server/.env"
 

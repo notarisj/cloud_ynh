@@ -67,6 +67,7 @@ ynh_script_progression "Updating sources..."
 cloud_sync_sources
 
 ynh_script_progression "Updating configuration..."
+cloud_normalise_admin_users
 ynh_config_add --template=".env" --destination="$install_dir/server/.env"
 chmod 600 "$install_dir/server/.env"
 
@@ -106,6 +107,9 @@ cloud_fix_permissions
 #=================================================
 ynh_script_progression "Updating nginx configuration..."
 ynh_config_add_nginx
+
+ynh_script_progression "Updating the rescue command..."
+cloud_install_rescue
 
 ynh_script_progression "Updating systemd service..."
 ynh_config_add_systemd

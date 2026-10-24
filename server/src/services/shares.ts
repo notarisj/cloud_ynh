@@ -32,7 +32,17 @@ export interface ShareRecord {
    */
   slug: string;
   sharedAt: number;
+  /**
+   * Who sees it under "/shared": everyone signed in to this server ("all", and
+   * what a record written before this field existed means), or only the owner
+   * and the accounts in sharedWith ("users").
+   */
+  visibility?: 'all' | 'users';
+  sharedWith?: string[];
 }
+
+/** The most people one item can be shared with by name. */
+const MAX_RECIPIENTS = 200;
 
 const registryFile = () => config.storage.sharesFile;
 
@@ -131,6 +141,41 @@ export function all(): ShareRecord[] {
   return enabled() ? load() : [];
 }
 
+/** Whether this account may see a published item at all. */
+export function visibleTo(record: ShareRecord, username: string): boolean {
+  if (record.visibility !== 'users' || record.owner === username) return true;
+  return record.sharedWith?.includes(username) === true;
+}
+
+/**
+ * Every published item this account may see. Anything that enumerates
+ * "/shared" — the listing, search, sync, Get Info — goes through here, so an
+ * item shared with named people never shows up for anybody else by another way.
+ */
+export function visibleFor(username: string): ShareRecord[] {
+  return all().filter((record) => visibleTo(record, username));
+}
+
+/**
+ * The people an item is shared with, cleaned up: real-looking account names,
+ * each once, never the owner. An empty list for "everyone".
+ */
+function recipients(owner: string, visibility: 'all' | 'users', sharedWith: unknown): string[] {
+  if (visibility === 'all') return [];
+  const names = Array.isArray(sharedWith) ? sharedWith : [];
+  const clean = [
+    ...new Set(
+      names.filter(
+        (name): name is string =>
+          typeof name === 'string' && /^[a-z0-9_][a-z0-9._-]{0,63}$/i.test(name) && name !== owner,
+      ),
+    ),
+  ];
+  if (clean.length === 0) throw badRequest('Choose at least one person to share with', 'no_recipients');
+  if (clean.length > MAX_RECIPIENTS) throw badRequest(`Share with at most ${MAX_RECIPIENTS} people`, 'too_many_recipients');
+  return clean;
+}
+
 export function bySlug(slug: string): ShareRecord | undefined {
   return all().find((record) => record.slug === slug);
 }
@@ -183,15 +228,28 @@ function slugify(name: string, taken: Set<string>): string {
  * Publish one item. The caller has already proved the path exists and belongs
  * to them; this only records it.
  */
-export function share(owner: string, rel: string, name: string): Promise<ShareRecord> {
+export function share(
+  owner: string,
+  rel: string,
+  name: string,
+  visibility: 'all' | 'users' = 'all',
+  sharedWith: unknown = [],
+): Promise<ShareRecord> {
   if (!enabled()) throw forbidden('Sharing is disabled on this server', 'sharing_disabled');
   if (rel.length === 0) throw badRequest('Cannot share a whole root', 'invalid_path');
+  const people = recipients(owner, visibility, sharedWith);
 
   return serialise(async () => {
     const records = load();
 
     const existing = records.find((record) => record.owner === owner && record.rel === rel);
-    if (existing) return existing;
+    if (existing) {
+      // Sharing it again changes who it is shared with.
+      existing.visibility = visibility;
+      existing.sharedWith = people;
+      await persist(records);
+      return existing;
+    }
 
     // Sharing a folder that already sits inside a shared folder would show the
     // same bytes twice under two names.
@@ -218,6 +276,8 @@ export function share(owner: string, rel: string, name: string): Promise<ShareRe
       rel,
       slug: slugify(name, new Set(records.map((r) => r.slug))),
       sharedAt: Date.now(),
+      visibility,
+      sharedWith: people,
     };
 
     await persist([...records, record]);

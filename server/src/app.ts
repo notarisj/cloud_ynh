@@ -13,6 +13,7 @@ import { syncRouter } from './routes/sync';
 import { trashRouter } from './routes/trash';
 import { uploadRouter } from './routes/upload';
 import { linksRouter } from './routes/links';
+import { usersRouter } from './routes/users';
 import { publicRouter } from './routes/public';
 
 /**
@@ -91,6 +92,7 @@ export function createApp(): Express {
   app.use('/api/v1/sync', requireProxySecret, syncRouter);
   app.use('/api/v1/media', requireProxySecret, mediaRouter);
   app.use('/api/v1/links', requireProxySecret, json, linksRouter);
+  app.use('/api/v1/users', requireProxySecret, json, usersRouter);
 
   // Public links. Reachable without any session, through their own
   // visitors permission in nginx; everything they serve is confined to the

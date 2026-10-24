@@ -141,7 +141,7 @@ export function rootsFor(_username: string): RootInfo[] {
 
 export async function stat(username: string, vpath: string): Promise<FileEntry> {
   const resolved = await resolveVPath(username, vpath, { mustExist: true });
-  if (resolved.isShareIndex) return shareIndexEntry();
+  if (resolved.isShareIndex) return shareIndexEntry(username);
 
   const stats = await fs.stat(resolved.abs).catch((e) => {
     throw fromNodeError(e);
@@ -162,8 +162,8 @@ function displayNameOf(resolved: ResolvedPath): string {
  * Giving it a real mtime and etag keeps the clients' caching logic working
  * without teaching them that this one path is special.
  */
-function shareIndexEntry(): FileEntry {
-  const records = shares.all();
+function shareIndexEntry(username: string): FileEntry {
+  const records = shares.visibleFor(username);
   const newest = records.reduce((latest, record) => Math.max(latest, record.sharedAt), 0);
   return {
     name: 'Shared',
@@ -300,7 +300,7 @@ export async function list(
 async function listShareIndex(username: string, options: ListOptions): Promise<ListResult> {
   const entries: FileEntry[] = [];
 
-  for (const record of shares.all()) {
+  for (const record of shares.visibleFor(username)) {
     const stats = await fs.stat(shares.absOf(record)).catch(() => null);
     if (!stats) continue;
     if (!stats.isDirectory() && !stats.isFile()) continue;
@@ -317,7 +317,7 @@ async function listShareIndex(username: string, options: ListOptions): Promise<L
   entries.sort((a, b) => compare(a, b, key));
   if (options.descending) entries.reverse();
 
-  return { entry: shareIndexEntry(), entries, writable: false };
+  return { entry: shareIndexEntry(username), entries, writable: false };
 }
 
 /** Resolve to an existing regular file — used by download, preview and thumbnails. */
@@ -582,7 +582,7 @@ export async function* filesBeneath(
 export async function measure(username: string, vpath: string): Promise<Measurement> {
   const resolved = await resolveVPath(username, vpath, { mustExist: true });
   if (resolved.isShareIndex) {
-    return { size: 0, files: 0, folders: shares.all().length, complete: true };
+    return { size: 0, files: 0, folders: shares.visibleFor(username).length, complete: true };
   }
 
   const stats = await fs.stat(resolved.abs).catch((e) => {
@@ -712,14 +712,14 @@ async function searchScopes(username: string, scopePath?: string): Promise<Searc
       return [{ abs: resolved.abs, vpath: resolved.vpath, owner: resolved.root === 'shared' ? resolved.owner : null }];
     }
     return shares
-      .all()
+      .visibleFor(username)
       .map((record) => ({ abs: shares.absOf(record), vpath: `/shared/${record.slug}`, owner: record.owner }));
   }
 
   const own = await resolveVPath(username, '/me', { mustExist: true });
   const scopes: SearchScope[] = [{ abs: own.abs, vpath: own.vpath, owner: null }];
 
-  for (const record of shares.all()) {
+  for (const record of shares.visibleFor(username)) {
     if (record.owner === username) continue;
     scopes.push({ abs: shares.absOf(record), vpath: `/shared/${record.slug}`, owner: record.owner });
   }

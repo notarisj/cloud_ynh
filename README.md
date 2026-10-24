@@ -12,9 +12,12 @@ Packaged for YunoHost 12, following the same conventions as `wg-man_ynh`.
 ## What you get
 
 - **Per-user storage** at `/me`. Nothing else on the server holds file bytes.
-- **Sharing by reference** at `/shared`. A shared item stays where it is, still
-  counts against its owner's quota, is read-only to everyone else, and vanishes
-  from Shared the moment it is unshared — nothing is copied or moved.
+- **Sharing by reference** at `/shared`, with everyone on the server or only
+  the people you choose. A shared item stays where it is, still counts against
+  its owner's quota, is read-only to everyone else, and vanishes from Shared the
+  moment it is unshared — nothing is copied or moved.
+- **Accounts for people outside YunoHost**, added by an administrator, with
+  their own storage and a password of their own.
 - **A web interface** — list and icon views, thumbnails for images, videos and
   PDFs, drag-and-drop upload, multi-select with move/copy/share/delete,
   full-screen previews, search, and Recently Deleted.
@@ -27,7 +30,10 @@ Packaged for YunoHost 12, following the same conventions as `wg-man_ynh`.
 - **Resumable uploads.** Large files are sent in 8 MB chunks straight to their
   final offset on disk, so an interrupted upload resumes instead of restarting.
 - **Passkeys.** Sign in with the fingerprint, face or PIN on your own device.
-  The private key never leaves it and the server stores only a public key.
+  The private key never leaves it and the server stores only a public key. An
+  account that has one can turn portal sign-in off entirely and become
+  passkey-only; `cloud-rescue allow-portal <user>`, as root on the server, is
+  the way back if that key is ever lost.
 - **A REST API** for native clients, authenticated against YunoHost's LDAP.
 - **SSO for the browser.** The portal session is exchanged for a token; nobody
   has to type a password twice.
@@ -35,7 +41,13 @@ Packaged for YunoHost 12, following the same conventions as `wg-man_ynh`.
 ## Install
 
 ```bash
-sudo yunohost app install https://github.com/<you>/cloud_ynh
+sudo yunohost app install "https://github.com/<you>/cloud_ynh"
+```
+
+## Update
+
+```bash
+sudo yunohost app upgrade cloud -u "https://github.com/notarisj/cloud_ynh"
 ```
 
 You are asked for:
@@ -152,13 +164,21 @@ Everything is under `<domain><path>/api/v1`. Send `Authorization: Bearer <token>
 | `POST` | `/files/copy` | `{from, to, conflict}` |
 | `POST` | `/files/ticket` | `{path}` → read ticket for a subtree |
 | `GET` | `/files/shares` | What you have published, newest first |
-| `POST` | `/files/share` | `{path}` → publish one of your items |
+| `POST` | `/files/share` | `{path, visibility?, sharedWith?}` → publish one of your items to `all`, or to `users` named in `sharedWith`; again to change who |
 | `DELETE` | `/files/share?path=` or `?id=` | Stop publishing it |
 | `DELETE` | `/files/?path=&permanent=` | To Recently Deleted, or for good |
 
 A listing also carries `writable`, and each entry may carry `shared`,
 `sharedAs`, `sharedBy` and `readOnly` — enough for a client to know what it may
 offer before the user tries it.
+
+### People
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/users` | People on the server — names for everyone, full records for admins |
+| `POST` | `/users` | Admin: `{username, password, isAdmin}` → a Cloud-only account |
+| `DELETE` | `/users/:username` | Admin: remove a Cloud-only account |
 
 ### Bytes
 
