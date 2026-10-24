@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ConfirmDialog, PromptDialog, Scrim } from './Dialogs';
 import { Avatar } from './Avatar';
 import { Icon } from './Icon';
-import { formatBytes, formatDate } from '../lib/format';
+import { formatBytes, formatDate, shareAudience } from '../lib/format';
 import * as api from '../lib/api';
 import type { DeviceSession, LinkSummary, PasskeySummary, Session, ShareSummary } from '../lib/api';
 
@@ -251,8 +251,8 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
             <section className="sheet__section">
               <h3>Shared by you</h3>
               <p className="sheet__lede">
-                Everyone with access to this app can open these. Stopping sharing deletes nothing — the item
-                stays in My Files.
+                Each item reaches everyone on this server, or only the people you chose. Stopping sharing
+                deletes nothing — the item stays in My Files.
               </p>
               {shares === null ? (
                 <div className="spinner" />
@@ -265,7 +265,7 @@ export function SettingsPanel({ session, onClose, onChanged }: SettingsPanelProp
                     <div className="sheet__rowtext">
                       <strong>{item.name}</strong>
                       <span>
-                        {displayPath(item.path)} · shared {formatDate(item.sharedAt)}
+                        {shareAudience(item)} · {displayPath(item.path)}
                       </span>
                     </div>
                     <button

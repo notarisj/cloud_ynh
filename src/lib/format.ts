@@ -143,3 +143,13 @@ export function formatRemaining(seconds: number): string {
   const rest = minutes % 60;
   return rest === 0 ? `${hours} hr left` : `${hours} hr ${rest} min left`;
 }
+
+/**
+ * Who a share reaches, as a list row says it: "Everyone", one person's name,
+ * or "3 people". The iOS app words it the same way.
+ */
+export function shareAudience(share: { visibility?: 'all' | 'users'; sharedWith?: string[] }): string {
+  const people = share.sharedWith ?? [];
+  if (share.visibility !== 'users' || people.length === 0) return 'Everyone';
+  return people.length === 1 ? people[0]! : `${people.length} people`;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { breadcrumbs, formatBytes, initials, kindLabel, locationLabel, needsRendition, splitExtension } from './format';
+import { breadcrumbs, formatBytes, initials, kindLabel, locationLabel, needsRendition, shareAudience, splitExtension } from './format';
 
 describe('formatting', () => {
   it('formats sizes the way the Finder does', () => {
@@ -43,5 +43,14 @@ describe('formatting', () => {
     expect(initials('jane.doe')).toBe('JD');
     expect(initials('dev')).toBe('D');
     expect(initials('')).toBe('?');
+  });
+});
+
+describe('shareAudience', () => {
+  it('reads like the iOS app', () => {
+    expect(shareAudience({})).toBe('Everyone');
+    expect(shareAudience({ visibility: 'all', sharedWith: [] })).toBe('Everyone');
+    expect(shareAudience({ visibility: 'users', sharedWith: ['carol'] })).toBe('carol');
+    expect(shareAudience({ visibility: 'users', sharedWith: ['carol', 'dave'] })).toBe('2 people');
   });
 });
