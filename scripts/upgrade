@@ -14,13 +14,13 @@ ynh_systemctl --service="$app" --action="stop"
 # Both are preserved across upgrades: regenerating jwt_secret would sign every
 # iOS device out.
 proxy_secret=$(ynh_app_setting_get --key=proxy_secret)
-if [ -z "$proxy_secret" ]; then
+if [ -z "${proxy_secret:-}" ]; then
     proxy_secret=$(ynh_string_random --length=48)
     ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
 fi
 
 jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
-if [ -z "$jwt_secret" ]; then
+if [ -z "${jwt_secret:-}" ]; then
     jwt_secret=$(ynh_string_random --length=64)
     ynh_app_setting_set --key=jwt_secret --value="$jwt_secret"
 fi
@@ -29,10 +29,10 @@ fi
 # NORMALISE SETTINGS
 #=================================================
 # Installs from before these settings existed fall back to the defaults.
-[ -z "$enable_shared" ]     && enable_shared="true"
-[ -z "$enable_thumbnails" ] && enable_thumbnails="true"
-[ -z "$enable_passkeys" ]   && enable_passkeys="true"
-[ -z "$enable_public_links" ] && enable_public_links="true"
+[ -z "${enable_shared:-}" ]     && enable_shared="true"
+[ -z "${enable_thumbnails:-}" ] && enable_thumbnails="true"
+[ -z "${enable_passkeys:-}" ]   && enable_passkeys="true"
+[ -z "${enable_public_links:-}" ] && enable_public_links="true"
 [ "$enable_public_links" = "1" ] && enable_public_links="true"
 [ "$enable_public_links" = "0" ] && enable_public_links="false"
 [ "$enable_shared"     = "1" ] && enable_shared="true"
@@ -42,11 +42,13 @@ fi
 [ "$enable_thumbnails" = "0" ] && enable_thumbnails="false"
 [ "$enable_passkeys"   = "0" ] && enable_passkeys="false"
 
+ynh_app_setting_set --key=enable_shared --value="$enable_shared"
+ynh_app_setting_set --key=enable_thumbnails --value="$enable_thumbnails"
 ynh_app_setting_set --key=enable_passkeys --value="$enable_passkeys"
 ynh_app_setting_set --key=enable_public_links --value="$enable_public_links"
 
-[ -z "$user_quota" ] && user_quota=0
-[ -z "$max_upload" ] && max_upload=20
+[ -z "${user_quota:-}" ] && user_quota=0
+[ -z "${max_upload:-}" ] && max_upload=20
 # The panel's number fields can hand back "5.0"; shell arithmetic only takes integers.
 user_quota=${user_quota%%.*}
 max_upload=${max_upload%%.*}

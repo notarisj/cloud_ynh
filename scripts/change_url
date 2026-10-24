@@ -30,14 +30,14 @@ path="$new_path"
 proxy_secret=$(ynh_app_setting_get --key=proxy_secret)
 jwt_secret=$(ynh_app_setting_get --key=jwt_secret)
 
-[ -z "$enable_shared" ]     && enable_shared="true"
-[ -z "$enable_thumbnails" ] && enable_thumbnails="true"
-[ -z "$enable_passkeys" ]   && enable_passkeys="true"
-[ -z "$enable_public_links" ] && enable_public_links="true"
+[ -z "${enable_shared:-}" ]     && enable_shared="true"
+[ -z "${enable_thumbnails:-}" ] && enable_thumbnails="true"
+[ -z "${enable_passkeys:-}" ]   && enable_passkeys="true"
+[ -z "${enable_public_links:-}" ] && enable_public_links="true"
 [ "$enable_public_links" = "1" ] && enable_public_links="true"
 [ "$enable_public_links" = "0" ] && enable_public_links="false"
-[ -z "$user_quota" ] && user_quota=0
-[ -z "$max_upload" ] && max_upload=20
+[ -z "${user_quota:-}" ] && user_quota=0
+[ -z "${max_upload:-}" ] && max_upload=20
 # The panel's number fields can hand back "5.0"; shell arithmetic only takes integers.
 user_quota=${user_quota%%.*}
 max_upload=${max_upload%%.*}
